@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>ShowingHive - Home</title>
+    <style>
+        :root {
+            --primary-color: #1E90FF;
+            --primary-hover: #0d6efd;
+        }
+        body {
+            font-family: Arial, sans-serif;
+            margin: 20px;
+        }
+        h1 {
+            color: var(--primary-color);
+        }
+        a {
+            color: var(--primary-color);
+            text-decoration: none;
+        }
+        a:hover {
+            color: var(--primary-hover);
+        }
+        ul {
+            list-style-type: none;
+            padding: 0;
+        }
+        li {
+            margin-bottom: 5px;
+        }
+        .logo {
+            width: 150px;
+            margin-bottom: 20px;
+        }
+        .button {
+            display: inline-block;
+            padding: 8px 16px;
+            background-color: var(--primary-color);
+            color: white;
+            border: none;
+            border-radius: 4px;
+            text-align: center;
+        }
+        .button:hover {
+            background-color: var(--primary-hover);
+        }
+    </style>
+</head>
+<body>
+    <img src="{{ url_for('static', filename='showinghive_logo.jpg') }}" alt="ShowingHive Logo" class="logo">
+    <h1>ShowingHive Dashboard</h1>
+    <p>
+        <a href="{{ url_for('ui_create_property') }}" class="button">Create New Property</a>
+    </p>
+    <h2>Properties</h2>
+    <ul>
+        {% for pid, prop in properties.items() %}
+        <li><a href="{{ url_for('ui_property_detail', property_id=pid) }}">{{ prop['name'] }}</a></li>
+        {% else %}
+        <li>No properties added.</li>
+        {% endfor %}
+    </ul>
+</body>
+</html>
