@@ -277,7 +277,18 @@ def has_conflict(property_id: str, start: datetime, end: datetime) -> bool:
 def property_list() -> Any:
     """
     List all properties or create a new property.  POST data should
-    include ``name`` and ``address``.  Returns JSON.
+    include ``name`` and ``address``.  Additional optional fields may
+    specify seller or agent contact information:
+
+    ``seller_name``, ``seller_phone``, ``seller_email`` – Contact information
+        for the home seller.  At least one of phone or email should be
+        provided if you want the seller to receive showing notifications.
+
+    ``agent_name``, ``agent_phone``, ``agent_email`` – Contact information
+        for the listing agent.  If provided, the agent will also
+        receive notifications about showing requests.
+
+    Returns JSON.
     """
     if request.method == "POST":
         data = request.json or {}
@@ -286,13 +297,21 @@ def property_list() -> Any:
         if not name or not address:
             return jsonify({"error": "name and address are required"}), 400
         prop_id = str(uuid.uuid4())
+        # capture optional contact details for seller and agent
         properties[prop_id] = {
             "id": prop_id,
             "name": name,
             "address": address,
             "created_at": datetime.utcnow(),
+            "seller_name": data.get("seller_name"),
+            "seller_phone": data.get("seller_phone"),
+            "seller_email": data.get("seller_email"),
+            "agent_name": data.get("agent_name"),
+            "agent_phone": data.get("agent_phone"),
+            "agent_email": data.get("agent_email"),
         }
         return jsonify(properties[prop_id]), 201
+    # GET
     return jsonify(list(properties.values()))
 
 
@@ -368,7 +387,7 @@ def showing_list() -> Any:
             "code_expires_at": None,
             "created_at": datetime.utcnow(),
         }
-        # Send a confirmation SMS if a client phone number is provided
+        # Notify the buyer that their request was received
         if client_phone:
             try:
                 prop = properties.get(prop_id)
@@ -377,7 +396,6 @@ def showing_list() -> Any:
                 send_sms(client_phone, f"Your showing request for {prop_name} on {when} has been received and is pending approval.")
             except Exception:
                 pass
-        # Send a confirmation email if an email address is provided
         if client_email:
             try:
                 prop = properties.get(prop_id)
@@ -390,6 +408,34 @@ def showing_list() -> Any:
                 )
             except Exception:
                 pass
+        # Notify the seller and/or agent about the pending showing
+        try:
+            prop = properties.get(prop_id, {})
+            prop_name = prop.get("name", prop_id)
+            when = start.strftime("%Y-%m-%d %H:%M")
+            seller_phone = prop.get("seller_phone")
+            seller_email = prop.get("seller_email")
+            agent_phone = prop.get("agent_phone")
+            agent_email = prop.get("agent_email")
+            # Prepare the message with instructions
+            msg = (
+                f"New showing request for {prop_name}: {client_name} has requested to view the property on {when}.\n"
+                f"Use your dashboard or the API to approve, decline or reschedule this showing.\n"
+                f"Showing ID: {showing_id}"
+            )
+            subj = f"New showing request for {prop_name}"
+            # Send to seller
+            if seller_phone:
+                send_sms(seller_phone, msg)
+            if seller_email:
+                send_email(seller_email, subj, msg)
+            # Also send to agent if provided
+            if agent_phone:
+                send_sms(agent_phone, msg)
+            if agent_email:
+                send_email(agent_email, subj, msg)
+        except Exception:
+            pass
         # Log the showing request as an activity event
         try:
             log_event(prop_id, "showing_requested", {
