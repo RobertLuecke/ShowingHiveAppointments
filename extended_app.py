@@ -60,7 +60,7 @@ import uuid
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 
-from flask import Flask, jsonify, request, render_template_string, send_file
+from flask import Flask, jsonify, request, render_template_string, send_file, render_template, redirect, url_for
 from werkzeug.utils import secure_filename
 import io
 import smtplib
@@ -100,6 +100,13 @@ activity_logs: Dict[str, List[Dict[str, Any]]] = {}
 # definitions and shares are stored in the following in‑memory structures.
 packages: Dict[str, Dict[str, Any]] = {}
 package_shares: Dict[str, Dict[str, Any]] = {}
+
+# Disclosure feedback storage
+# -----------------------------------------------------------------------------
+# Buyers can provide feedback on disclosure packages after reviewing them.  This
+# dictionary stores feedback entries keyed by share ID.  Each entry contains
+# a list of feedback objects with rating, comment and creation timestamp.
+disclosure_feedback_store: Dict[str, List[Dict[str, Any]]] = {}
 
 # Offers management
 # -----------------------------------------------------------------------------
@@ -1017,6 +1024,11 @@ def property_report(property_id: str) -> Any:
             for status in {"pending", "approved", "declined"}
         },
         "feedback_count": sum(len(feedback_store.get(sid, [])) for sid, s in showings.items() if s["property_id"] == property_id),
+        "disclosure_feedback_count": sum(
+            len(disclosure_feedback_store.get(share_id, []))
+            for share_id, share in package_shares.items()
+            if share.get("property_id") == property_id
+        ),
     }
     return jsonify(report)
 
@@ -1106,6 +1118,9 @@ def create_share(package_id: str) -> Any:
     buyer_name = data.get("buyer_name")
     if not buyer_name:
         return jsonify({"error": "buyer_name is required"}), 400
+    # Capture optional buyer contact information for notifications
+    buyer_phone = data.get("buyer_phone")
+    buyer_email = data.get("buyer_email")
     share_id = str(uuid.uuid4())
     prop_id = pkg["property_id"]
     prop = properties.get(prop_id, {})
@@ -1116,6 +1131,8 @@ def create_share(package_id: str) -> Any:
         "package_id": package_id,
         "property_id": prop_id,
         "buyer_name": buyer_name,
+        "buyer_phone": buyer_phone,
+        "buyer_email": buyer_email,
         "downloads": [],  # list of dicts {filename, timestamp}
         "approved": auto,
     }
@@ -1153,6 +1170,28 @@ def create_share(package_id: str) -> Any:
             send_sms(agent_phone, msg)
         if agent_email:
             send_email(agent_email, subj, msg)
+    except Exception:
+        pass
+    # Notify the buyer about the share status
+    try:
+        if auto:
+            # If the share is auto approved, tell the buyer they can download the package
+            buyer_msg = (
+                f"You have been granted access to disclosure package '{pkg['name']}' for {prop_name}.\n"
+                f"Use your share ID {share_id} to download the files."
+            )
+            buyer_subj = f"Disclosure package available for {prop_name}"
+        else:
+            # Otherwise inform them that approval is pending
+            buyer_msg = (
+                f"Your request to access disclosure package '{pkg['name']}' for {prop_name} has been received and is pending approval.\n"
+                f"You will be notified when access is granted."
+            )
+            buyer_subj = f"Disclosure access request received for {prop_name}"
+        if buyer_phone:
+            send_sms(buyer_phone, buyer_msg)
+        if buyer_email:
+            send_email(buyer_email, buyer_subj, buyer_msg)
     except Exception:
         pass
     return jsonify({"share_id": share_id, "approved": auto}), 201
@@ -1212,6 +1251,115 @@ def share_download(share_id: str, filename: str) -> Any:
         as_attachment=True,
     )
 
+# -----------------------------------------------------------------------------
+# Disclosure Request Endpoint
+#
+# Buyers or their agents can use this endpoint to request access to a specific
+# disclosure package.  Unlike the generic share creation endpoint (which is
+# typically used by listing agents), this route is meant for buyers.  It
+# captures the buyer's contact information and notifies the seller and agent
+# that a request has been made.  The system automatically determines whether
+# the share is approved based on the property's ``requires_disclosure_approval``
+# setting.  The buyer will receive a notification indicating whether their
+# request is pending or immediately available.
+
+@app.route("/properties/<property_id>/disclosures/request", methods=["POST"])
+def request_disclosure(property_id: str) -> Any:
+    """
+    Request access to a disclosure package for a property.  POST data must
+    include ``package_id`` (identifying which package to access) and
+    ``buyer_name``.  Optional ``buyer_phone`` and ``buyer_email`` provide
+    contact details for notifications.  Returns the share ID and approval
+    status.  Logs a ``disclosure_requested`` event.
+    """
+    if property_id not in properties:
+        return jsonify({"error": "property not found"}), 404
+    data = request.json or {}
+    pkg_id = data.get("package_id")
+    buyer_name = data.get("buyer_name")
+    if not pkg_id or not buyer_name:
+        return jsonify({"error": "package_id and buyer_name are required"}), 400
+    pkg = packages.get(pkg_id)
+    if not pkg or pkg.get("property_id") != property_id:
+        return jsonify({"error": "package not found for property"}), 404
+    buyer_phone = data.get("buyer_phone")
+    buyer_email = data.get("buyer_email")
+    # Determine auto approval based on property settings
+    prop = properties.get(property_id, {})
+    auto = not prop.get("requires_disclosure_approval")
+    share_id = str(uuid.uuid4())
+    package_shares[share_id] = {
+        "id": share_id,
+        "package_id": pkg_id,
+        "property_id": property_id,
+        "buyer_name": buyer_name,
+        "buyer_phone": buyer_phone,
+        "buyer_email": buyer_email,
+        "downloads": [],
+        "approved": auto,
+    }
+    # Log disclosure request
+    try:
+        log_event(property_id, "disclosure_requested", {
+            "share_id": share_id,
+            "package_id": pkg_id,
+            "buyer_name": buyer_name,
+            "auto": auto,
+        })
+    except Exception:
+        pass
+    # Notify seller/agent
+    try:
+        prop_name = prop.get("name", property_id)
+        seller_phone = prop.get("seller_phone")
+        seller_email = prop.get("seller_email")
+        agent_phone = prop.get("agent_phone")
+        agent_email = prop.get("agent_email")
+        if auto:
+            msg = (
+                f"Disclosure package '{pkg['name']}' for {prop_name} was automatically shared with buyer {buyer_name}."
+                f" (Share ID: {share_id})"
+            )
+            subj = f"Disclosure package shared for {prop_name}"
+        else:
+            msg = (
+                f"Buyer {buyer_name} has requested access to disclosure package '{pkg['name']}' for {prop_name}.\n"
+                f"Approve the share via POST /share/{share_id}/approve."
+            )
+            subj = f"Disclosure access request for {prop_name}"
+        if seller_phone:
+            send_sms(seller_phone, msg)
+        if seller_email:
+            send_email(seller_email, subj, msg)
+        if agent_phone:
+            send_sms(agent_phone, msg)
+        if agent_email:
+            send_email(agent_email, subj, msg)
+    except Exception:
+        pass
+    # Notify buyer about the status
+    try:
+        prop_name = prop.get("name", property_id)
+        if auto:
+            buyer_msg = (
+                f"You have been granted access to disclosure package '{pkg['name']}' for {prop_name}.\n"
+                f"Use your share ID {share_id} to download the files."
+            )
+            buyer_subj = f"Disclosure package available for {prop_name}"
+        else:
+            buyer_msg = (
+                f"Your request to access disclosure package '{pkg['name']}' for {prop_name} has been received and is pending approval.\n"
+                f"You will be notified when access is granted."
+            )
+            buyer_subj = f"Disclosure access request received for {prop_name}"
+        if buyer_phone:
+            send_sms(buyer_phone, buyer_msg)
+        if buyer_email:
+            send_email(buyer_email, buyer_subj, buyer_msg)
+    except Exception:
+        pass
+    return jsonify({"share_id": share_id, "approved": auto}), 201
+
 
 @app.route("/properties/<property_id>/interest", methods=["GET"])
 def buyer_interest(property_id: str) -> Any:
@@ -1231,6 +1379,78 @@ def buyer_interest(property_id: str) -> Any:
                 "downloads": len(share.get("downloads", [])),
             })
     return jsonify(report)
+
+# -----------------------------------------------------------------------------
+# Disclosure Feedback Endpoint
+#
+# Buyers can provide feedback on the contents of a disclosure package they
+# downloaded via a share.  Feedback includes a rating (1–5) and a comment.
+# Feedback entries are stored in ``disclosure_feedback_store`` keyed by
+# share ID.  This endpoint logs a ``share_feedback_submitted`` event and
+# notifies the seller and agent about the new feedback.
+
+@app.route("/share/<share_id>/feedback", methods=["POST"])
+def share_feedback(share_id: str) -> Any:
+    """
+    Submit feedback for a disclosure share.  POST data must include
+    ``rating`` (integer 1–5) and ``comment`` (non‑empty string).  Returns
+    the stored feedback entry.  Logs a ``share_feedback_submitted`` event.
+    """
+    share = package_shares.get(share_id)
+    if not share:
+        return jsonify({"error": "share not found"}), 404
+    data = request.json or {}
+    try:
+        rating = int(data.get("rating"))
+    except Exception:
+        return jsonify({"error": "rating must be an integer"}), 400
+    comment = data.get("comment")
+    if rating < 1 or rating > 5 or not comment:
+        return jsonify({"error": "rating must be 1–5 and comment required"}), 400
+    entry = {
+        "id": str(uuid.uuid4()),
+        "rating": rating,
+        "comment": comment,
+        "buyer_name": share.get("buyer_name"),
+        "created_at": datetime.utcnow().isoformat(),
+    }
+    disclosure_feedback_store.setdefault(share_id, []).append(entry)
+    # Log feedback event
+    try:
+        prop_id = share.get("property_id")
+        log_event(prop_id, "share_feedback_submitted", {
+            "share_id": share_id,
+            "buyer_name": share.get("buyer_name"),
+            "rating": rating,
+            "comment": comment,
+        })
+    except Exception:
+        pass
+    # Notify seller/agent about feedback
+    try:
+        prop_id = share.get("property_id")
+        prop = properties.get(prop_id, {})
+        prop_name = prop.get("name", prop_id)
+        msg_notify = (
+            f"New disclosure feedback received for {prop_name} (share ID {share_id}).\n"
+            f"Rating: {rating}, Comment: {comment}"
+        )
+        subj_notify = f"Disclosure feedback for {prop_name}"
+        seller_phone = prop.get("seller_phone")
+        seller_email = prop.get("seller_email")
+        agent_phone = prop.get("agent_phone")
+        agent_email = prop.get("agent_email")
+        if seller_phone:
+            send_sms(seller_phone, msg_notify)
+        if seller_email:
+            send_email(seller_email, subj_notify, msg_notify)
+        if agent_phone:
+            send_sms(agent_phone, msg_notify)
+        if agent_email:
+            send_email(agent_email, subj_notify, msg_notify)
+    except Exception:
+        pass
+    return jsonify(entry), 201
 
 
 # -----------------------------------------------------------------------------
@@ -1257,7 +1477,7 @@ def approve_share(share_id: str) -> Any:
         log_event(prop_id, "share_approved", {"share_id": share_id, "buyer_name": share.get("buyer_name")})
     except Exception:
         pass
-    # Notify seller/agent that the share has been approved
+    # Notify seller/agent and buyer that the share has been approved
     try:
         prop = properties.get(prop_id, {})
         prop_name = prop.get("name", prop_id)
@@ -1279,6 +1499,18 @@ def approve_share(share_id: str) -> Any:
             send_sms(agent_phone, msg_notify)
         if agent_email:
             send_email(agent_email, subj_notify, msg_notify)
+        # Notify the buyer that access has been granted
+        buyer_phone = share.get("buyer_phone")
+        buyer_email = share.get("buyer_email")
+        buyer_msg = (
+            f"Your request to access disclosure package for {prop_name} has been approved.\n"
+            f"Use your share ID {share_id} to download the files."
+        )
+        buyer_subj = f"Disclosure package approved for {prop_name}"
+        if buyer_phone:
+            send_sms(buyer_phone, buyer_msg)
+        if buyer_email:
+            send_email(buyer_email, buyer_subj, buyer_msg)
     except Exception:
         pass
     return jsonify(share)
@@ -1487,3 +1719,544 @@ def email_admin() -> Any:
 if __name__ == "__main__":
     # Run the app on port 3000 for demonstration purposes
     app.run(host="0.0.0.0", port=3000, debug=True)
+
+
+# -----------------------------------------------------------------------------
+# Front‑end (UI) Routes
+#
+# The following routes provide a simple web interface for interacting with the
+# showing and disclosure management system.  They render Jinja2 templates
+# located in the ``templates`` directory.  These forms call the same in‑memory
+# functions used by the API endpoints to ensure the front‑end and API stay
+# synchronized.
+
+@app.route("/")
+def ui_home() -> Any:
+    """Render a homepage listing all properties with links to view details."""
+    return render_template("home.html", properties=properties)
+
+
+@app.route("/properties/new", methods=["GET", "POST"])
+def ui_create_property() -> Any:
+    """Render a form to create a new property and handle submission."""
+    if request.method == "POST":
+        # Use same logic as API to parse and create property
+        name = request.form.get("name")
+        address = request.form.get("address")
+        if not name or not address:
+            return render_template("create_property.html", error="Name and address are required")
+        # optional contacts
+        seller_name = request.form.get("seller_name")
+        seller_phone = request.form.get("seller_phone")
+        seller_email = request.form.get("seller_email")
+        agent_name = request.form.get("agent_name")
+        agent_phone = request.form.get("agent_phone")
+        agent_email = request.form.get("agent_email")
+        # parse boolean flags
+        def parse_bool(val: Any) -> bool:
+            if isinstance(val, bool):
+                return val
+            if isinstance(val, str):
+                return val.lower() in {"true", "1", "yes", "on"}
+            return False
+        auto_approve = parse_bool(request.form.get("auto_approve_showings"))
+        req_disc_approval = parse_bool(request.form.get("requires_disclosure_approval"))
+        prop_id = str(uuid.uuid4())
+        properties[prop_id] = {
+            "id": prop_id,
+            "name": name,
+            "address": address,
+            "created_at": datetime.utcnow(),
+            "seller_name": seller_name,
+            "seller_phone": seller_phone,
+            "seller_email": seller_email,
+            "agent_name": agent_name,
+            "agent_phone": agent_phone,
+            "agent_email": agent_email,
+            "auto_approve_showings": auto_approve,
+            "requires_disclosure_approval": req_disc_approval,
+        }
+        return redirect(url_for("ui_property_detail", property_id=prop_id))
+    return render_template("create_property.html")
+
+
+@app.route("/properties/<property_id>")
+def ui_property_detail(property_id: str) -> Any:
+    """Display details for a single property, including showings and packages."""
+    prop = properties.get(property_id)
+    if not prop:
+        return "Property not found", 404
+    # Gather showings for this property
+    property_showings = [s for s in showings.values() if s["property_id"] == property_id]
+    # Sort showings by scheduled time
+    property_showings.sort(key=lambda s: s["scheduled_at"])
+    # Gather packages and shares for this property
+    property_packages = [pkg for pkg in packages.values() if pkg["property_id"] == property_id]
+    property_shares = [sh for sh in package_shares.values() if sh["property_id"] == property_id]
+    # List uploaded disclosure files
+    files = list(disclosures.get(property_id, {}).keys())
+    return render_template(
+        "property_detail.html",
+        property=prop,
+        showings=property_showings,
+        packages=property_packages,
+        shares=property_shares,
+        files=files,
+    )
+
+
+@app.route("/properties/<property_id>/schedule_showing", methods=["POST"])
+def ui_schedule_showing(property_id: str) -> Any:
+    """Handle scheduling a showing from the UI form."""
+    # reuse API logic to schedule showing
+    prop = properties.get(property_id)
+    if not prop:
+        return "Property not found", 404
+    # parse form fields
+    client_name = request.form.get("client_name")
+    scheduled_at = request.form.get("scheduled_at")
+    client_phone = request.form.get("client_phone")
+    client_email = request.form.get("client_email")
+    if not client_name or not scheduled_at:
+        return redirect(url_for("ui_property_detail", property_id=property_id))
+    # call underlying showing_list POST logic directly
+    # convert to JSON-like data and reuse existing function
+    # create new showing id
+    try:
+        start = datetime.fromisoformat(scheduled_at)
+    except Exception:
+        return redirect(url_for("ui_property_detail", property_id=property_id))
+    end = start + timedelta(hours=1)
+    # Check conflict
+    if is_time_blocked(property_id, start, end) or has_conflict(property_id, start, end):
+        # Could set flash message; skip for simplicity
+        return redirect(url_for("ui_property_detail", property_id=property_id))
+    showing_id = str(uuid.uuid4())
+    showings[showing_id] = {
+        "id": showing_id,
+        "property_id": property_id,
+        "client_name": client_name,
+        "client_phone": client_phone,
+        "client_email": client_email,
+        "scheduled_at": start,
+        "status": "pending",
+        "lockbox_code": None,
+        "code_expires_at": None,
+        "created_at": datetime.utcnow(),
+    }
+    # send notifications and log event (reuse code from API)
+    try:
+        # notify buyer
+        if client_phone:
+            send_sms(client_phone, f"Your showing request for {prop['name']} on {start.strftime('%Y-%m-%d %H:%M')} has been received and is pending approval.")
+        if client_email:
+            send_email(
+                client_email,
+                "Showing request received",
+                f"Hello {client_name},\n\nYour showing request for {prop['name']} on {start.strftime('%Y-%m-%d %H:%M')} has been received and is pending approval.\n\nThank you."
+            )
+        # notify seller/agent
+        msg = (
+            f"New showing request for {prop['name']}: {client_name} has requested to view the property on {start.strftime('%Y-%m-%d %H:%M')}.\n"
+            f"Use your dashboard or the API to approve, decline or reschedule this showing.\n"
+            f"Showing ID: {showing_id}"
+        )
+        subj = f"New showing request for {prop['name']}"
+        if prop.get("seller_phone"):
+            send_sms(prop.get("seller_phone"), msg)
+        if prop.get("seller_email"):
+            send_email(prop.get("seller_email"), subj, msg)
+        if prop.get("agent_phone"):
+            send_sms(prop.get("agent_phone"), msg)
+        if prop.get("agent_email"):
+            send_email(prop.get("agent_email"), subj, msg)
+        # log event
+        log_event(property_id, "showing_requested", {
+            "showing_id": showing_id,
+            "client_name": client_name,
+            "scheduled_at": start.isoformat(),
+        })
+        # auto approve if configured
+        if prop.get("auto_approve_showings"):
+            s = showings[showing_id]
+            code = generate_lockbox_code()
+            s["lockbox_code"] = code
+            s["code_expires_at"] = s["scheduled_at"] + timedelta(hours=1, minutes=15)
+            s["status"] = "approved"
+            # notify buyer
+            when2 = s["scheduled_at"].strftime("%Y-%m-%d %H:%M")
+            code_str = s["lockbox_code"]
+            expires_str = s["code_expires_at"].strftime("%Y-%m-%d %H:%M")
+            if s.get("client_phone"):
+                send_sms(s.get("client_phone"), f"Your showing for {prop['name']} at {when2} has been approved. Lockbox code: {code_str} (expires {expires_str}).")
+            if s.get("client_email"):
+                send_email(s.get("client_email"), "Showing approved", f"Hello {s['client_name']},\n\nYour showing for {prop['name']} at {when2} has been approved.\nYour lockbox code is {code_str} and will expire at {expires_str}.\n\nThank you.")
+            # notify property contacts of auto approval
+            notif_msg = (
+                f"Showing for {prop['name']} on {when2} was automatically approved.\n"
+                f"Buyer: {s['client_name']}. Lockbox code: {code_str} (expires {expires_str}).\n"
+                f"Showing ID: {showing_id}"
+            )
+            notif_subj = f"Showing auto‑approved for {prop['name']}"
+            if prop.get("seller_phone"):
+                send_sms(prop.get("seller_phone"), notif_msg)
+            if prop.get("seller_email"):
+                send_email(prop.get("seller_email"), notif_subj, notif_msg)
+            if prop.get("agent_phone"):
+                send_sms(prop.get("agent_phone"), notif_msg)
+            if prop.get("agent_email"):
+                send_email(prop.get("agent_email"), notif_subj, notif_msg)
+            # log approval
+            log_event(property_id, "showing_approved", {
+                "showing_id": showing_id,
+                "client_name": s["client_name"],
+                "scheduled_at": s["scheduled_at"].isoformat(),
+                "lockbox_code": s["lockbox_code"],
+                "auto": True,
+            })
+    except Exception:
+        pass
+    return redirect(url_for("ui_property_detail", property_id=property_id))
+
+
+@app.route("/showings/<showing_id>/approve_ui", methods=["POST"])
+def ui_approve_showing(showing_id: str) -> Any:
+    """Approve a showing from the UI and redirect to the property detail page."""
+    s = showings.get(showing_id)
+    if not s:
+        return "Showing not found", 404
+    prop_id = s["property_id"]
+    # reuse approval logic
+    if s["status"] == "pending":
+        code = generate_lockbox_code()
+        s["lockbox_code"] = code
+        s["code_expires_at"] = s["scheduled_at"] + timedelta(hours=1, minutes=15)
+        s["status"] = "approved"
+        # send notifications
+        try:
+            prop = properties.get(prop_id)
+            prop_name = prop.get("name") if prop else prop_id
+            when = s["scheduled_at"].strftime("%Y-%m-%d %H:%M")
+            code_str = s["lockbox_code"]
+            expires_str = s["code_expires_at"].strftime("%Y-%m-%d %H:%M")
+            # buyer
+            if s.get("client_phone"):
+                send_sms(s.get("client_phone"), f"Your showing for {prop_name} at {when} has been approved. Lockbox code: {code_str} (expires {expires_str}).")
+            if s.get("client_email"):
+                send_email(s.get("client_email"), "Showing approved", f"Hello {s['client_name']},\n\nYour showing for {prop_name} at {when} has been approved.\nYour lockbox code is {code_str} and will expire at {expires_str}.\n\nThank you.")
+            # seller/agent
+            msg_notify = (
+                f"Showing for {prop_name} on {when} has been approved.\n"
+                f"Buyer: {s['client_name']}. Lockbox code: {code_str} (expires {expires_str}).\n"
+                f"Showing ID: {showing_id}"
+            )
+            subj_notify = f"Showing approved for {prop_name}"
+            if prop.get("seller_phone"):
+                send_sms(prop.get("seller_phone"), msg_notify)
+            if prop.get("seller_email"):
+                send_email(prop.get("seller_email"), subj_notify, msg_notify)
+            if prop.get("agent_phone"):
+                send_sms(prop.get("agent_phone"), msg_notify)
+            if prop.get("agent_email"):
+                send_email(prop.get("agent_email"), subj_notify, msg_notify)
+            # log event
+            log_event(prop_id, "showing_approved", {
+                "showing_id": showing_id,
+                "client_name": s["client_name"],
+                "scheduled_at": s["scheduled_at"].isoformat(),
+                "lockbox_code": s["lockbox_code"],
+            })
+        except Exception:
+            pass
+    return redirect(url_for("ui_property_detail", property_id=prop_id))
+
+
+@app.route("/showings/<showing_id>/decline_ui", methods=["POST"])
+def ui_decline_showing(showing_id: str) -> Any:
+    """Decline a showing from the UI."""
+    s = showings.get(showing_id)
+    if not s:
+        return "Showing not found", 404
+    prop_id = s["property_id"]
+    if s["status"] == "pending":
+        s["status"] = "declined"
+        try:
+            prop = properties.get(prop_id)
+            prop_name = prop.get("name") if prop else prop_id
+            when = s["scheduled_at"].strftime("%Y-%m-%d %H:%M")
+            # notify buyer
+            if s.get("client_phone"):
+                send_sms(s.get("client_phone"), f"Your showing request for {prop_name} on {when} has been declined.")
+            if s.get("client_email"):
+                send_email(s.get("client_email"), "Showing declined", f"Hello {s['client_name']},\n\nYour showing request for {prop_name} on {when} has been declined.\n\nThank you.")
+            # notify seller/agent
+            msg_notify = (
+                f"Showing for {prop_name} on {when} has been declined.\n"
+                f"Buyer: {s['client_name']}. Showing ID: {showing_id}"
+            )
+            subj_notify = f"Showing declined for {prop_name}"
+            if prop.get("seller_phone"):
+                send_sms(prop.get("seller_phone"), msg_notify)
+            if prop.get("seller_email"):
+                send_email(prop.get("seller_email"), subj_notify, msg_notify)
+            if prop.get("agent_phone"):
+                send_sms(prop.get("agent_phone"), msg_notify)
+            if prop.get("agent_email"):
+                send_email(prop.get("agent_email"), subj_notify, msg_notify)
+            # log decline
+            log_event(prop_id, "showing_declined", {
+                "showing_id": showing_id,
+                "client_name": s["client_name"],
+                "scheduled_at": s["scheduled_at"].isoformat(),
+            })
+        except Exception:
+            pass
+    return redirect(url_for("ui_property_detail", property_id=prop_id))
+
+
+@app.route("/showings/<showing_id>/reschedule_ui", methods=["POST"])
+def ui_reschedule_showing(showing_id: str) -> Any:
+    """Reschedule a showing from the UI."""
+    s = showings.get(showing_id)
+    if not s:
+        return "Showing not found", 404
+    prop_id = s["property_id"]
+    new_time = request.form.get("new_time")
+    if not new_time:
+        return redirect(url_for("ui_property_detail", property_id=prop_id))
+    try:
+        start = datetime.fromisoformat(new_time)
+    except Exception:
+        return redirect(url_for("ui_property_detail", property_id=prop_id))
+    end = start + timedelta(hours=1)
+    if is_time_blocked(prop_id, start, end) or has_conflict(prop_id, start, end):
+        return redirect(url_for("ui_property_detail", property_id=prop_id))
+    s["scheduled_at"] = start
+    regenerated = False
+    if s["status"] == "approved":
+        s["lockbox_code"] = generate_lockbox_code()
+        s["code_expires_at"] = start + timedelta(hours=1, minutes=15)
+        regenerated = True
+    # send notifications
+    try:
+        prop = properties.get(prop_id)
+        prop_name = prop.get("name") if prop else prop_id
+        when_str = start.strftime("%Y-%m-%d %H:%M")
+        if regenerated:
+            code_str = s["lockbox_code"]
+            expires_str = s["code_expires_at"].strftime("%Y-%m-%d %H:%M") if s.get("code_expires_at") else ""
+            sms_msg = f"Your showing for {prop_name} has been rescheduled to {when_str}. New lockbox code: {code_str} (expires {expires_str})."
+            email_body = f"Hello {s['client_name']},\n\nYour showing for {prop_name} has been rescheduled to {when_str}.\nYour new lockbox code is {code_str} and will expire at {expires_str}.\n\nThank you."
+        else:
+            sms_msg = f"Your showing request for {prop_name} has been rescheduled to {when_str} and is pending approval."
+            email_body = f"Hello {s['client_name']},\n\nYour showing request for {prop_name} has been rescheduled to {when_str} and is pending approval.\n\nThank you."
+        if s.get("client_phone"):
+            send_sms(s.get("client_phone"), sms_msg)
+        if s.get("client_email"):
+            send_email(s.get("client_email"), "Showing rescheduled", email_body)
+        # notify seller/agent
+        msg_notify = (
+            f"Showing for {prop_name} has been rescheduled to {when_str}.\n"
+            f"Buyer: {s['client_name']}. Showing ID: {showing_id}"
+        )
+        subj_notify = f"Showing rescheduled for {prop_name}"
+        if prop.get("seller_phone"):
+            send_sms(prop.get("seller_phone"), msg_notify)
+        if prop.get("seller_email"):
+            send_email(prop.get("seller_email"), subj_notify, msg_notify)
+        if prop.get("agent_phone"):
+            send_sms(prop.get("agent_phone"), msg_notify)
+        if prop.get("agent_email"):
+            send_email(prop.get("agent_email"), subj_notify, msg_notify)
+        # log event
+        log_event(prop_id, "showing_rescheduled", {
+            "showing_id": showing_id,
+            "client_name": s["client_name"],
+            "new_scheduled_at": start.isoformat(),
+        })
+    except Exception:
+        pass
+    return redirect(url_for("ui_property_detail", property_id=prop_id))
+
+
+# UI helpers for disclosures and packages
+@app.route("/properties/<property_id>/create_package_ui", methods=["POST"])
+def ui_create_package(property_id: str) -> Any:
+    """Create a listing package from a form submission."""
+    prop = properties.get(property_id)
+    if not prop:
+        return "Property not found", 404
+    name = request.form.get("name")
+    files_field = request.form.get("files") or ""
+    files_list = [f.strip() for f in files_field.split(",") if f.strip()]
+    is_public = bool(request.form.get("is_public"))
+    if not name or not files_list:
+        return redirect(url_for("ui_property_detail", property_id=property_id))
+    # validate that files exist
+    prop_files = disclosures.get(property_id, {})
+    for fn in files_list:
+        safe_fn = secure_filename(fn)
+        if safe_fn not in prop_files:
+            return redirect(url_for("ui_property_detail", property_id=property_id))
+    pkg_id = str(uuid.uuid4())
+    packages[pkg_id] = {
+        "id": pkg_id,
+        "property_id": property_id,
+        "name": name,
+        "files": [secure_filename(fn) for fn in files_list],
+        "is_public": is_public,
+        "created_at": datetime.utcnow().isoformat(),
+    }
+    # log event
+    try:
+        log_event(property_id, "package_created", {
+            "package_id": pkg_id,
+            "name": name,
+            "files": files_list,
+            "is_public": is_public,
+        })
+    except Exception:
+        pass
+    return redirect(url_for("ui_property_detail", property_id=property_id))
+
+
+@app.route("/properties/<property_id>/request_disclosure_ui", methods=["POST"])
+def ui_request_disclosure(property_id: str) -> Any:
+    """Handle disclosure request from UI."""
+    prop = properties.get(property_id)
+    if not prop:
+        return "Property not found", 404
+    package_id = request.form.get("package_id")
+    buyer_name = request.form.get("buyer_name")
+    buyer_phone = request.form.get("buyer_phone")
+    buyer_email = request.form.get("buyer_email")
+    if not package_id or not buyer_name:
+        return redirect(url_for("ui_property_detail", property_id=property_id))
+    pkg = packages.get(package_id)
+    if not pkg or pkg.get("property_id") != property_id:
+        return redirect(url_for("ui_property_detail", property_id=property_id))
+    # Determine auto approval
+    auto = not prop.get("requires_disclosure_approval")
+    share_id = str(uuid.uuid4())
+    package_shares[share_id] = {
+        "id": share_id,
+        "package_id": package_id,
+        "property_id": property_id,
+        "buyer_name": buyer_name,
+        "buyer_phone": buyer_phone,
+        "buyer_email": buyer_email,
+        "downloads": [],
+        "approved": auto,
+    }
+    # log event
+    try:
+        log_event(property_id, "disclosure_requested", {
+            "share_id": share_id,
+            "package_id": package_id,
+            "buyer_name": buyer_name,
+            "auto": auto,
+        })
+    except Exception:
+        pass
+    # notify seller/agent
+    try:
+        prop_name = prop.get("name", property_id)
+        seller_phone = prop.get("seller_phone")
+        seller_email = prop.get("seller_email")
+        agent_phone = prop.get("agent_phone")
+        agent_email = prop.get("agent_email")
+        if auto:
+            msg = (
+                f"Disclosure package '{pkg['name']}' for {prop_name} was automatically shared with buyer {buyer_name}. (Share ID: {share_id})"
+            )
+            subj = f"Disclosure package shared for {prop_name}"
+        else:
+            msg = (
+                f"Buyer {buyer_name} has requested access to disclosure package '{pkg['name']}' for {prop_name}.\n"
+                f"Approve the share via POST /share/{share_id}/approve."
+            )
+            subj = f"Disclosure access request for {prop_name}"
+        if seller_phone:
+            send_sms(seller_phone, msg)
+        if seller_email:
+            send_email(seller_email, subj, msg)
+        if agent_phone:
+            send_sms(agent_phone, msg)
+        if agent_email:
+            send_email(agent_email, subj, msg)
+    except Exception:
+        pass
+    # notify buyer
+    try:
+        prop_name = prop.get("name", property_id)
+        if auto:
+            buyer_msg = (
+                f"You have been granted access to disclosure package '{pkg['name']}' for {prop_name}.\nUse your share ID {share_id} to download the files."
+            )
+            buyer_subj = f"Disclosure package available for {prop_name}"
+        else:
+            buyer_msg = (
+                f"Your request to access disclosure package '{pkg['name']}' for {prop_name} has been received and is pending approval.\nYou will be notified when access is granted."
+            )
+            buyer_subj = f"Disclosure access request received for {prop_name}"
+        if buyer_phone:
+            send_sms(buyer_phone, buyer_msg)
+        if buyer_email:
+            send_email(buyer_email, buyer_subj, buyer_msg)
+    except Exception:
+        pass
+    return redirect(url_for("ui_property_detail", property_id=property_id))
+
+
+@app.route("/properties/<property_id>/upload_disclosure_ui", methods=["POST"])
+def ui_upload_disclosure(property_id: str) -> Any:
+    """Handle disclosure file upload from UI."""
+    if property_id not in properties:
+        return "Property not found", 404
+    file = request.files.get("file")
+    if not file:
+        return redirect(url_for("ui_property_detail", property_id=property_id))
+    filename = secure_filename(file.filename or "")
+    if not filename:
+        return redirect(url_for("ui_property_detail", property_id=property_id))
+    data_bytes = file.read()
+    disclosures.setdefault(property_id, {})[filename] = data_bytes
+    # log upload event
+    try:
+        log_event(property_id, "upload_disclosure", {"filename": filename})
+    except Exception:
+        pass
+    return redirect(url_for("ui_property_detail", property_id=property_id))
+
+
+@app.route("/share/<share_id>/approve_ui", methods=["POST"])
+def ui_approve_share(share_id: str) -> Any:
+    """Approve a disclosure share from the UI."""
+    share = package_shares.get(share_id)
+    if not share:
+        return "Share not found", 404
+    prop_id = share.get("property_id")
+    if not share.get("approved"):
+        share["approved"] = True
+        # log event
+        try:
+            log_event(prop_id, "share_approved", {"share_id": share_id, "buyer_name": share.get("buyer_name")})
+        except Exception:
+            pass
+        # notify buyer
+        try:
+            prop = properties.get(prop_id, {})
+            prop_name = prop.get("name", prop_id)
+            buyer_phone = share.get("buyer_phone")
+            buyer_email = share.get("buyer_email")
+            buyer_msg = (
+                f"Your request to access disclosure package for {prop_name} has been approved.\nUse your share ID {share_id} to download the files."
+            )
+            buyer_subj = f"Disclosure package approved for {prop_name}"
+            if buyer_phone:
+                send_sms(buyer_phone, buyer_msg)
+            if buyer_email:
+                send_email(buyer_email, buyer_subj, buyer_msg)
+        except Exception:
+            pass
+    return redirect(url_for("ui_property_detail", property_id=prop_id))
