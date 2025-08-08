@@ -1716,11 +1716,6 @@ def email_admin() -> Any:
     return render_template_string(page, cfg=email_config, message=msg)
 
 
-if __name__ == "__main__":
-    # Run the app on port 3000 for demonstration purposes
-    app.run(host="0.0.0.0", port=3000, debug=True)
-
-
 # -----------------------------------------------------------------------------
 # Front‑end (UI) Routes
 #
@@ -2260,3 +2255,8 @@ def ui_approve_share(share_id: str) -> Any:
         except Exception:
             pass
     return redirect(url_for("ui_property_detail", property_id=prop_id))
+
+# Only run the development server if this module is executed directly.
+if __name__ == "__main__":
+    # Run the app on port 3000 for demonstration purposes
+    app.run(host="0.0.0.0", port=3000, debug=True)
