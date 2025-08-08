@@ -60,7 +60,9 @@ import uuid
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 
-from flask import Flask, jsonify, request, render_template_string
+from flask import Flask, jsonify, request, render_template_string, send_file
+from werkzeug.utils import secure_filename
+import io
 import smtplib
 from email.mime.text import MIMEText
 
@@ -74,6 +76,40 @@ showings: Dict[str, Dict[str, Any]] = {}
 feedback_store: Dict[str, List[Dict[str, Any]]] = {}
 blocked_times: Dict[str, List[Tuple[datetime, datetime]]] = {}
 tours: Dict[str, Dict[str, Any]] = {}
+
+# -----------------------------------------------------------------------------
+# Disclosure management and activity logging
+#
+# The following two in‑memory structures hold uploaded disclosure files and
+# records of activity for each property.  Disclosure files are stored as
+# byte streams keyed by property ID and filename.  The activity log is a
+# chronological list of events (such as showing requests, approvals,
+# declines, reschedules, feedback submissions and disclosure uploads or
+# downloads) for each property.  These structures are kept in memory for
+# demonstration purposes; a real system would persist them in a database
+# or external storage.
+disclosures: Dict[str, Dict[str, bytes]] = {}
+activity_logs: Dict[str, List[Dict[str, Any]]] = {}
+
+
+def log_event(property_id: str, event_type: str, details: Dict[str, Any]) -> None:
+    """
+    Record an activity event for a property.  Each event includes a
+    timestamp and arbitrary details.  Events are stored in reverse
+    chronological order (most recent first).
+
+    :param property_id: ID of the property the event relates to.
+    :param event_type: A short string describing the type of event
+        (e.g., ``showing_requested``, ``showing_approved``, ``feedback_submitted``,
+        ``upload_disclosure``, ``download_disclosure``).
+    :param details: Additional context about the event.
+    """
+    entry = {
+        "timestamp": datetime.utcnow().isoformat(),
+        "type": event_type,
+        "details": details,
+    }
+    activity_logs.setdefault(property_id, []).insert(0, entry)
 
 
 def generate_lockbox_code() -> str:
@@ -337,6 +373,15 @@ def showing_list() -> Any:
                 )
             except Exception:
                 pass
+        # Log the showing request as an activity event
+        try:
+            log_event(prop_id, "showing_requested", {
+                "showing_id": showing_id,
+                "client_name": client_name,
+                "scheduled_at": start.isoformat(),
+            })
+        except Exception:
+            pass
         return jsonify(showings[showing_id]), 201
     # GET
     return jsonify(list(showings.values()))
@@ -375,6 +420,16 @@ def approve_showing(showing_id: str) -> Any:
             send_email(client_email, email_subj, email_body)
     except Exception:
         pass
+    # Log the approval event
+    try:
+        log_event(s["property_id"], "showing_approved", {
+            "showing_id": showing_id,
+            "client_name": s["client_name"],
+            "scheduled_at": s["scheduled_at"].isoformat(),
+            "lockbox_code": s["lockbox_code"],
+        })
+    except Exception:
+        pass
     return jsonify(s)
 
 
@@ -403,6 +458,15 @@ def decline_showing(showing_id: str) -> Any:
             send_sms(client_phone, sms_msg)
         if client_email:
             send_email(client_email, email_subj, email_body)
+    except Exception:
+        pass
+    # Log the decline event
+    try:
+        log_event(s["property_id"], "showing_declined", {
+            "showing_id": showing_id,
+            "client_name": s["client_name"],
+            "scheduled_at": s["scheduled_at"].isoformat(),
+        })
     except Exception:
         pass
     return jsonify(s)
@@ -462,6 +526,15 @@ def reschedule_showing(showing_id: str) -> Any:
             send_email(client_email, email_subj, email_body)
     except Exception:
         pass
+    # Log the reschedule event
+    try:
+        log_event(prop_id, "showing_rescheduled", {
+            "showing_id": showing_id,
+            "client_name": s["client_name"],
+            "new_scheduled_at": start.isoformat(),
+        })
+    except Exception:
+        pass
     return jsonify(s)
 
 
@@ -489,6 +562,16 @@ def submit_feedback(showing_id: str) -> Any:
         "created_at": datetime.utcnow(),
     }
     feedback_store.setdefault(showing_id, []).append(entry)
+    # Log feedback submission
+    try:
+        property_id = s["property_id"]  # type: ignore[name-defined]
+        log_event(property_id, "feedback_submitted", {
+            "showing_id": showing_id,
+            "rating": rating,
+            "comment": comment,
+        })
+    except Exception:
+        pass
     return jsonify(entry), 201
 
 
@@ -586,6 +669,114 @@ def property_dashboard(property_id: str) -> Any:
         ],
     }
     return jsonify(dashboard)
+
+
+# -----------------------------------------------------------------------------
+# Disclosure upload, download and activity reporting endpoints
+#
+# These routes allow sellers or agents to upload disclosure packages for a
+# property, retrieve a list of uploaded files, download individual
+# disclosures, view an activity log and generate summary reports.  Files
+# are stored in memory for demonstration purposes and will be lost when
+# the application restarts.
+
+@app.route("/properties/<property_id>/disclosures", methods=["GET", "POST"])
+def property_disclosures(property_id: str) -> Any:
+    """
+    Upload a disclosure file for a property or list existing disclosures.
+
+    * POST: Accepts a multipart/form upload with a single ``file`` field.  The
+      file is stored in memory and associated with the property.  Returns
+      JSON containing the filename.  Logs an ``upload_disclosure`` event.
+
+    * GET: Returns a JSON list of filenames representing disclosures
+      uploaded for the property.
+    """
+    if property_id not in properties:
+        return jsonify({"error": "property not found"}), 404
+    if request.method == "POST":
+        if "file" not in request.files:
+            return jsonify({"error": "file is required"}), 400
+        file = request.files["file"]
+        filename = secure_filename(file.filename or "")
+        if not filename:
+            return jsonify({"error": "invalid filename"}), 400
+        data = file.read()
+        disclosures.setdefault(property_id, {})[filename] = data
+        # Log the upload event
+        try:
+            log_event(property_id, "upload_disclosure", {"filename": filename})
+        except Exception:
+            pass
+        return jsonify({"filename": filename}), 201
+    # GET
+    files = list(disclosures.get(property_id, {}).keys())
+    return jsonify(files)
+
+
+@app.route("/properties/<property_id>/disclosures/<path:filename>", methods=["GET"])
+def download_disclosure(property_id: str, filename: str) -> Any:
+    """
+    Download a specific disclosure file for a property.  Logs a
+    ``download_disclosure`` event.  Returns 404 if the file does not exist.
+    """
+    if property_id not in properties:
+        return jsonify({"error": "property not found"}), 404
+    # Ensure the filename is safe
+    safe_name = secure_filename(filename)
+    data = disclosures.get(property_id, {}).get(safe_name)
+    if data is None:
+        return jsonify({"error": "file not found"}), 404
+    # Log download event
+    try:
+        log_event(property_id, "download_disclosure", {"filename": safe_name})
+    except Exception:
+        pass
+    return send_file(
+        io.BytesIO(data),
+        download_name=safe_name,
+        as_attachment=True,
+    )
+
+
+@app.route("/properties/<property_id>/activity", methods=["GET"])
+def get_activity_log(property_id: str) -> Any:
+    """
+    Retrieve the activity log for a property.  Returns a list of events in
+    reverse chronological order.  Each event contains a timestamp, type
+    and details.
+    """
+    if property_id not in properties:
+        return jsonify({"error": "property not found"}), 404
+    return jsonify(activity_logs.get(property_id, []))
+
+
+@app.route("/properties/<property_id>/report", methods=["GET"])
+def property_report(property_id: str) -> Any:
+    """
+    Generate a simple summary report for a property.  The report counts
+    occurrences of each event type recorded in the activity log and
+    returns the totals along with basic information about the property and
+    number of uploaded disclosures.
+    """
+    if property_id not in properties:
+        return jsonify({"error": "property not found"}), 404
+    events = activity_logs.get(property_id, [])
+    counts: Dict[str, int] = {}
+    for ev in events:
+        counts[ev["type"]] = counts.get(ev["type"], 0) + 1
+    report = {
+        "property": properties[property_id],
+        "event_counts": counts,
+        "disclosure_count": len(disclosures.get(property_id, {})),
+        "total_showings": sum(1 for s in showings.values() if s["property_id"] == property_id),
+        "showings_by_status": {
+            status: sum(1 for s in showings.values() if s["property_id"] == property_id and s["status"] == status)
+            for status in {"pending", "approved", "declined"}
+        },
+        "feedback_count": sum(len(feedback_store.get(sid, [])) for sid, s in showings.items() if s["property_id"] == property_id),
+    }
+    return jsonify(report)
 
 
 # -----------------------------------------------------------------------------
