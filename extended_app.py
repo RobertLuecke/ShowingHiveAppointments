@@ -91,6 +91,23 @@ tours: Dict[str, Dict[str, Any]] = {}
 disclosures: Dict[str, Dict[str, bytes]] = {}
 activity_logs: Dict[str, List[Dict[str, Any]]] = {}
 
+# Packages and sharing
+# -----------------------------------------------------------------------------
+# A package groups multiple disclosure files together into a single listing
+# packet for a property.  Packages can be public or private.  A package may be
+# shared with individual buyers via a unique share link, which allows buyers
+# to download the files and automatically logs their activity.  Package
+# definitions and shares are stored in the following in‑memory structures.
+packages: Dict[str, Dict[str, Any]] = {}
+package_shares: Dict[str, Dict[str, Any]] = {}
+
+# Offers management
+# -----------------------------------------------------------------------------
+# Listing offers are stored in the ``offers`` dictionary keyed by property ID.
+# Each offer includes an ID, the buyer's name, price and an optional set of
+# terms.  Offers can be listed and created via dedicated endpoints.
+offers: Dict[str, List[Dict[str, Any]]] = {}
+
 
 def log_event(property_id: str, event_type: str, details: Dict[str, Any]) -> None:
     """
@@ -769,12 +786,262 @@ def property_report(property_id: str) -> Any:
         "property": properties[property_id],
         "event_counts": counts,
         "disclosure_count": len(disclosures.get(property_id, {})),
+        "package_count": sum(1 for pkg in packages.values() if pkg["property_id"] == property_id),
+        "share_count": sum(1 for sh in package_shares.values() if sh["property_id"] == property_id),
+        "offers_count": len(offers.get(property_id, [])),
         "total_showings": sum(1 for s in showings.values() if s["property_id"] == property_id),
         "showings_by_status": {
             status: sum(1 for s in showings.values() if s["property_id"] == property_id and s["status"] == status)
             for status in {"pending", "approved", "declined"}
         },
         "feedback_count": sum(len(feedback_store.get(sid, [])) for sid, s in showings.items() if s["property_id"] == property_id),
+    }
+    return jsonify(report)
+
+
+# -----------------------------------------------------------------------------
+# Package and Share Endpoints
+#
+# Packages group multiple disclosure files into a single listing information
+# package.  Users can create packages, list them for a property and retrieve
+# details of a specific package.  Packages may be shared with buyers via
+# unique share links, which track download activity and contribute to buyer
+# interest reports.
+
+@app.route("/properties/<property_id>/packages", methods=["GET", "POST"])
+def manage_packages(property_id: str) -> Any:
+    """
+    Create or list listing packages for a property.
+
+    POST data should include ``name`` (string), ``files`` (list of filenames
+    already uploaded to the property via the disclosures endpoint) and
+    optional ``is_public`` (boolean, defaults to False).  Returns the new
+    package definition.  Logs a ``package_created`` event.
+
+    GET returns a list of packages for the specified property.  Each entry
+    includes the package ID, name, file list and public/private flag.
+    """
+    if property_id not in properties:
+        return jsonify({"error": "property not found"}), 404
+    if request.method == "POST":
+        data = request.json or {}
+        name = data.get("name")
+        files = data.get("files") or []
+        is_public = bool(data.get("is_public", False))
+        if not name or not isinstance(files, list) or not files:
+            return jsonify({"error": "name and non‑empty files list required"}), 400
+        # Validate file names exist for the property
+        prop_files = disclosures.get(property_id, {})
+        for fn in files:
+            safe_fn = secure_filename(fn)
+            if safe_fn not in prop_files:
+                return jsonify({"error": f"file {fn} not found for property"}), 400
+        pkg_id = str(uuid.uuid4())
+        packages[pkg_id] = {
+            "id": pkg_id,
+            "property_id": property_id,
+            "name": name,
+            "files": [secure_filename(fn) for fn in files],
+            "is_public": is_public,
+            "created_at": datetime.utcnow().isoformat(),
+        }
+        # Log package creation
+        try:
+            log_event(property_id, "package_created", {"package_id": pkg_id, "name": name, "files": files, "is_public": is_public})
+        except Exception:
+            pass
+        return jsonify(packages[pkg_id]), 201
+    # GET: list packages
+    return jsonify([
+        {k: v for k, v in pkg.items() if k != "property_id"}
+        for pkg in packages.values() if pkg["property_id"] == property_id
+    ])
+
+
+@app.route("/packages/<package_id>", methods=["GET"])
+def package_detail(package_id: str) -> Any:
+    """
+    Retrieve the details of a specific package.  Returns the package fields or
+    404 if not found.
+    """
+    pkg = packages.get(package_id)
+    if not pkg:
+        return jsonify({"error": "package not found"}), 404
+    return jsonify(pkg)
+
+
+@app.route("/packages/<package_id>/share", methods=["POST"])
+def create_share(package_id: str) -> Any:
+    """
+    Create a share link for a buyer to access a package.  POST data should
+    include ``buyer_name``.  Returns a share ID which can be used to
+    download the package files.  Logs a ``share_created`` event.
+    """
+    pkg = packages.get(package_id)
+    if not pkg:
+        return jsonify({"error": "package not found"}), 404
+    data = request.json or {}
+    buyer_name = data.get("buyer_name")
+    if not buyer_name:
+        return jsonify({"error": "buyer_name is required"}), 400
+    share_id = str(uuid.uuid4())
+    package_shares[share_id] = {
+        "id": share_id,
+        "package_id": package_id,
+        "property_id": pkg["property_id"],
+        "buyer_name": buyer_name,
+        "downloads": [],  # list of dicts {filename, timestamp}
+    }
+    # Log share creation
+    try:
+        log_event(pkg["property_id"], "share_created", {"share_id": share_id, "package_id": package_id, "buyer_name": buyer_name})
+    except Exception:
+        pass
+    return jsonify({"share_id": share_id}), 201
+
+
+@app.route("/share/<share_id>/files", methods=["GET"])
+def share_file_list(share_id: str) -> Any:
+    """
+    List the files available to a buyer via a share link.  Returns the
+    filenames from the underlying package, or 404 if the share or package
+    does not exist.
+    """
+    share = package_shares.get(share_id)
+    if not share:
+        return jsonify({"error": "share not found"}), 404
+    pkg = packages.get(share["package_id"])
+    if not pkg:
+        return jsonify({"error": "package not found"}), 404
+    return jsonify(pkg["files"])
+
+
+@app.route("/share/<share_id>/files/<path:filename>", methods=["GET"])
+def share_download(share_id: str, filename: str) -> Any:
+    """
+    Allow a buyer to download a specific file from a package via a share link.
+    Logs the download in the share record and creates a ``share_download``
+    activity event for the property.  Returns 404 if the share, package or
+    file does not exist.
+    """
+    share = package_shares.get(share_id)
+    if not share:
+        return jsonify({"error": "share not found"}), 404
+    pkg = packages.get(share["package_id"])
+    if not pkg:
+        return jsonify({"error": "package not found"}), 404
+    safe_fn = secure_filename(filename)
+    if safe_fn not in pkg["files"]:
+        return jsonify({"error": "file not found in package"}), 404
+    prop_id = pkg["property_id"]
+    data = disclosures.get(prop_id, {}).get(safe_fn)
+    if data is None:
+        return jsonify({"error": "file not found"}), 404
+    # Record download in share
+    timestamp = datetime.utcnow().isoformat()
+    share["downloads"].append({"filename": safe_fn, "timestamp": timestamp})
+    # Log activity event
+    try:
+        log_event(prop_id, "share_download", {"share_id": share_id, "buyer_name": share["buyer_name"], "filename": safe_fn})
+    except Exception:
+        pass
+    return send_file(
+        io.BytesIO(data),
+        download_name=safe_fn,
+        as_attachment=True,
+    )
+
+
+@app.route("/properties/<property_id>/interest", methods=["GET"])
+def buyer_interest(property_id: str) -> Any:
+    """
+    Generate a simple buyer interest report summarizing disclosure download
+    activity by share.  Returns a list of buyers with the count of files
+    downloaded.  This approximates the buyer interest report provided by
+    listing‑management tools.
+    """
+    if property_id not in properties:
+        return jsonify({"error": "property not found"}), 404
+    report = []
+    for share in package_shares.values():
+        if share["property_id"] == property_id:
+            report.append({
+                "buyer_name": share["buyer_name"],
+                "downloads": len(share.get("downloads", [])),
+            })
+    return jsonify(report)
+
+
+# -----------------------------------------------------------------------------
+# Offer Endpoints
+#
+# Offers allow buyers to submit purchase proposals for a property.  Each
+# offer includes a price and optional terms.  Sellers can view all offers and
+# retrieve a report summarizing them.
+
+@app.route("/properties/<property_id>/offers", methods=["GET", "POST"])
+def property_offers(property_id: str) -> Any:
+    """
+    Create or list offers for a property.
+
+    POST data must include ``buyer_name`` and ``price`` (numeric).  Optional
+    ``terms`` may describe contingencies or notes.  Returns the created offer
+    entry and logs an ``offer_submitted`` event.
+
+    GET returns a list of all offers for the specified property.
+    """
+    if property_id not in properties:
+        return jsonify({"error": "property not found"}), 404
+    if request.method == "POST":
+        data = request.json or {}
+        buyer_name = data.get("buyer_name")
+        price = data.get("price")
+        terms = data.get("terms")
+        if not buyer_name or price is None:
+            return jsonify({"error": "buyer_name and price are required"}), 400
+        try:
+            price_val = float(price)
+        except Exception:
+            return jsonify({"error": "price must be numeric"}), 400
+        offer_id = str(uuid.uuid4())
+        offer_entry = {
+            "id": offer_id,
+            "buyer_name": buyer_name,
+            "price": price_val,
+            "terms": terms,
+            "created_at": datetime.utcnow().isoformat(),
+        }
+        offers.setdefault(property_id, []).append(offer_entry)
+        # Log offer submission
+        try:
+            log_event(property_id, "offer_submitted", {"offer_id": offer_id, "buyer_name": buyer_name, "price": price_val})
+        except Exception:
+            pass
+        return jsonify(offer_entry), 201
+    # GET
+    return jsonify(offers.get(property_id, []))
+
+
+@app.route("/properties/<property_id>/offers/report", methods=["GET"])
+def offers_report(property_id: str) -> Any:
+    """
+    Produce a summary of offers for a property.  The report sorts offers
+    descending by price and includes the top offer, average price and the
+    number of offers.  Returns 404 if no offers exist.
+    """
+    if property_id not in properties:
+        return jsonify({"error": "property not found"}), 404
+    prop_offers = offers.get(property_id)
+    if not prop_offers:
+        return jsonify({"error": "no offers for property"}), 404
+    sorted_offers = sorted(prop_offers, key=lambda x: x["price"], reverse=True)
+    total = sum(o["price"] for o in sorted_offers)
+    avg = total / len(sorted_offers)
+    report = {
+        "offers": sorted_offers,
+        "top_offer": sorted_offers[0],
+        "average_price": avg,
+        "count": len(sorted_offers),
     }
     return jsonify(report)
 
