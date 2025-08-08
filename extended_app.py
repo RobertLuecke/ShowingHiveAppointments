@@ -288,6 +288,18 @@ def property_list() -> Any:
         for the listing agent.  If provided, the agent will also
         receive notifications about showing requests.
 
+    ``auto_approve_showings`` (boolean) – When set to true, any showing
+        scheduled for this property will be automatically approved
+        immediately.  The system will generate a lockbox code and send
+        notifications to the buyer and property contacts without
+        requiring manual approval.
+
+    ``requires_disclosure_approval`` (boolean) – When true, buyers
+        requesting disclosure packages must have their share approved by
+        the seller or agent before they can download files.  Shares
+        created under this setting start in a ``pending`` state and
+        must be approved via ``POST /share/<share_id>/approve``.
+
     Returns JSON.
     """
     if request.method == "POST":
@@ -298,6 +310,13 @@ def property_list() -> Any:
             return jsonify({"error": "name and address are required"}), 400
         prop_id = str(uuid.uuid4())
         # capture optional contact details for seller and agent
+        # Parse boolean flags for auto approval settings
+        def parse_bool(val: Any) -> bool:
+            if isinstance(val, bool):
+                return val
+            if isinstance(val, str):
+                return val.lower() in {"true", "1", "yes", "on"}
+            return False
         properties[prop_id] = {
             "id": prop_id,
             "name": name,
@@ -309,6 +328,10 @@ def property_list() -> Any:
             "agent_name": data.get("agent_name"),
             "agent_phone": data.get("agent_phone"),
             "agent_email": data.get("agent_email"),
+            # If true, showings will automatically be approved upon request
+            "auto_approve_showings": parse_bool(data.get("auto_approve_showings")),
+            # If true, disclosure packages require explicit approval before download
+            "requires_disclosure_approval": parse_bool(data.get("requires_disclosure_approval")),
         }
         return jsonify(properties[prop_id]), 201
     # GET
@@ -445,6 +468,61 @@ def showing_list() -> Any:
             })
         except Exception:
             pass
+
+        # Auto‑approve the showing if the property is configured to do so
+        try:
+            prop = properties.get(prop_id, {})
+            if prop.get("auto_approve_showings"):
+                # mimic the approve_showing logic
+                s = showings.get(showing_id)
+                if s and s["status"] == "pending":
+                    code = generate_lockbox_code()
+                    s["lockbox_code"] = code
+                    s["code_expires_at"] = s["scheduled_at"] + timedelta(hours=1, minutes=15)
+                    s["status"] = "approved"
+                    # notify buyer about approval
+                    client_phone = s.get("client_phone")
+                    client_email2 = s.get("client_email")
+                    prop_name2 = prop.get("name", prop_id)
+                    when2 = s["scheduled_at"].strftime("%Y-%m-%d %H:%M")
+                    code_str = s["lockbox_code"]
+                    expires_str = s["code_expires_at"].strftime("%Y-%m-%d %H:%M") if s.get("code_expires_at") else ""
+                    sms_msg2 = f"Your showing for {prop_name2} at {when2} has been approved. Lockbox code: {code_str} (expires {expires_str})."
+                    email_subj2 = "Showing approved"
+                    email_body2 = f"Hello {s['client_name']},\n\nYour showing for {prop_name2} at {when2} has been approved.\nYour lockbox code is {code_str} and will expire at {expires_str}.\n\nThank you."
+                    if client_phone:
+                        send_sms(client_phone, sms_msg2)
+                    if client_email2:
+                        send_email(client_email2, email_subj2, email_body2)
+                    # notify seller/agent about auto approval
+                    seller_phone2 = prop.get("seller_phone")
+                    seller_email2 = prop.get("seller_email")
+                    agent_phone2 = prop.get("agent_phone")
+                    agent_email2 = prop.get("agent_email")
+                    notif_msg = (
+                        f"Showing for {prop_name2} on {when2} was automatically approved.\n"
+                        f"Buyer: {s['client_name']}. Lockbox code: {code_str} (expires {expires_str}).\n"
+                        f"Showing ID: {showing_id}"
+                    )
+                    notif_subj = f"Showing auto‑approved for {prop_name2}"
+                    if seller_phone2:
+                        send_sms(seller_phone2, notif_msg)
+                    if seller_email2:
+                        send_email(seller_email2, notif_subj, notif_msg)
+                    if agent_phone2:
+                        send_sms(agent_phone2, notif_msg)
+                    if agent_email2:
+                        send_email(agent_email2, notif_subj, notif_msg)
+                    # log approval event
+                    log_event(prop_id, "showing_approved", {
+                        "showing_id": showing_id,
+                        "client_name": s["client_name"],
+                        "scheduled_at": s["scheduled_at"].isoformat(),
+                        "lockbox_code": s["lockbox_code"],
+                        "auto": True,
+                    })
+        except Exception:
+            pass
         return jsonify(showings[showing_id]), 201
     # GET
     return jsonify(list(showings.values()))
@@ -465,7 +543,7 @@ def approve_showing(showing_id: str) -> Any:
     s["lockbox_code"] = code
     s["code_expires_at"] = s["scheduled_at"] + timedelta(hours=1, minutes=15)
     s["status"] = "approved"
-    # Send approval notifications
+    # Send approval notifications to the buyer
     client_phone = s.get("client_phone")
     client_email = s.get("client_email")
     try:
@@ -481,6 +559,33 @@ def approve_showing(showing_id: str) -> Any:
             send_sms(client_phone, sms_msg)
         if client_email:
             send_email(client_email, email_subj, email_body)
+    except Exception:
+        pass
+    # Notify seller/agent that the showing has been approved (manual)
+    try:
+        prop = properties.get(s["property_id"], {})
+        seller_phone = prop.get("seller_phone")
+        seller_email = prop.get("seller_email")
+        agent_phone = prop.get("agent_phone")
+        agent_email = prop.get("agent_email")
+        prop_name = prop.get("name", s["property_id"])
+        when = s["scheduled_at"].strftime("%Y-%m-%d %H:%M")
+        code_str = s.get("lockbox_code") or ""
+        expires_str = s.get("code_expires_at").strftime("%Y-%m-%d %H:%M") if s.get("code_expires_at") else ""
+        msg_notify = (
+            f"Showing for {prop_name} on {when} has been approved.\n"
+            f"Buyer: {s['client_name']}. Lockbox code: {code_str} (expires {expires_str}).\n"
+            f"Showing ID: {showing_id}"
+        )
+        subj_notify = f"Showing approved for {prop_name}"
+        if seller_phone:
+            send_sms(seller_phone, msg_notify)
+        if seller_email:
+            send_email(seller_email, subj_notify, msg_notify)
+        if agent_phone:
+            send_sms(agent_phone, msg_notify)
+        if agent_email:
+            send_email(agent_email, subj_notify, msg_notify)
     except Exception:
         pass
     # Log the approval event
@@ -530,6 +635,30 @@ def decline_showing(showing_id: str) -> Any:
             "client_name": s["client_name"],
             "scheduled_at": s["scheduled_at"].isoformat(),
         })
+    except Exception:
+        pass
+    # Notify seller/agent of the declined showing
+    try:
+        prop = properties.get(s["property_id"], {})
+        prop_name = prop.get("name", s["property_id"])
+        when = s["scheduled_at"].strftime("%Y-%m-%d %H:%M")
+        msg_notify = (
+            f"Showing for {prop_name} on {when} has been declined.\n"
+            f"Buyer: {s['client_name']}. Showing ID: {showing_id}"
+        )
+        subj_notify = f"Showing declined for {prop_name}"
+        seller_phone = prop.get("seller_phone")
+        seller_email = prop.get("seller_email")
+        agent_phone = prop.get("agent_phone")
+        agent_email = prop.get("agent_email")
+        if seller_phone:
+            send_sms(seller_phone, msg_notify)
+        if seller_email:
+            send_email(seller_email, subj_notify, msg_notify)
+        if agent_phone:
+            send_sms(agent_phone, msg_notify)
+        if agent_email:
+            send_email(agent_email, subj_notify, msg_notify)
     except Exception:
         pass
     return jsonify(s)
@@ -598,6 +727,30 @@ def reschedule_showing(showing_id: str) -> Any:
         })
     except Exception:
         pass
+    # Notify seller/agent about the reschedule
+    try:
+        prop = properties.get(prop_id, {})
+        prop_name = prop.get("name", prop_id)
+        # Determine message based on whether new code was generated
+        seller_phone = prop.get("seller_phone")
+        seller_email = prop.get("seller_email")
+        agent_phone = prop.get("agent_phone")
+        agent_email = prop.get("agent_email")
+        msg_notify = (
+            f"Showing for {prop_name} has been rescheduled to {when_str}.\n"
+            f"Buyer: {s['client_name']}. Showing ID: {showing_id}"
+        )
+        subj_notify = f"Showing rescheduled for {prop_name}"
+        if seller_phone:
+            send_sms(seller_phone, msg_notify)
+        if seller_email:
+            send_email(seller_email, subj_notify, msg_notify)
+        if agent_phone:
+            send_sms(agent_phone, msg_notify)
+        if agent_email:
+            send_email(agent_email, subj_notify, msg_notify)
+    except Exception:
+        pass
     return jsonify(s)
 
 
@@ -633,6 +786,29 @@ def submit_feedback(showing_id: str) -> Any:
             "rating": rating,
             "comment": comment,
         })
+    except Exception:
+        pass
+    # Notify seller/agent of the feedback
+    try:
+        prop = properties.get(s["property_id"], {})  # type: ignore[name-defined]
+        prop_name = prop.get("name", s["property_id"])  # type: ignore[name-defined]
+        msg_notify = (
+            f"New feedback received for showing ID {showing_id} on {prop_name}.\n"
+            f"Rating: {rating}, Comment: {comment}"
+        )
+        subj_notify = f"Showing feedback for {prop_name}"
+        seller_phone = prop.get("seller_phone")
+        seller_email = prop.get("seller_email")
+        agent_phone = prop.get("agent_phone")
+        agent_email = prop.get("agent_email")
+        if seller_phone:
+            send_sms(seller_phone, msg_notify)
+        if seller_email:
+            send_email(seller_email, subj_notify, msg_notify)
+        if agent_phone:
+            send_sms(agent_phone, msg_notify)
+        if agent_email:
+            send_email(agent_email, subj_notify, msg_notify)
     except Exception:
         pass
     return jsonify(entry), 201
@@ -931,19 +1107,55 @@ def create_share(package_id: str) -> Any:
     if not buyer_name:
         return jsonify({"error": "buyer_name is required"}), 400
     share_id = str(uuid.uuid4())
+    prop_id = pkg["property_id"]
+    prop = properties.get(prop_id, {})
+    # Determine whether this share is automatically approved based on property setting
+    auto = not prop.get("requires_disclosure_approval")
     package_shares[share_id] = {
         "id": share_id,
         "package_id": package_id,
-        "property_id": pkg["property_id"],
+        "property_id": prop_id,
         "buyer_name": buyer_name,
         "downloads": [],  # list of dicts {filename, timestamp}
+        "approved": auto,
     }
     # Log share creation
     try:
-        log_event(pkg["property_id"], "share_created", {"share_id": share_id, "package_id": package_id, "buyer_name": buyer_name})
+        log_event(prop_id, "share_created", {"share_id": share_id, "package_id": package_id, "buyer_name": buyer_name, "auto": auto})
     except Exception:
         pass
-    return jsonify({"share_id": share_id}), 201
+    # Notify seller/agent of the share request.
+    try:
+        prop_name = prop.get("name", prop_id)
+        seller_phone = prop.get("seller_phone")
+        seller_email = prop.get("seller_email")
+        agent_phone = prop.get("agent_phone")
+        agent_email = prop.get("agent_email")
+        if auto:
+            # Auto‑approved share
+            msg = (
+                f"Disclosure package '{pkg['name']}' for {prop_name} was automatically shared with buyer {buyer_name}."
+                f" (Share ID: {share_id})"
+            )
+            subj = f"Disclosure package shared for {prop_name}"
+        else:
+            # Approval required
+            msg = (
+                f"Buyer {buyer_name} has requested access to disclosure package '{pkg['name']}' for {prop_name}.\n"
+                f"Approve the share via POST /share/{share_id}/approve."
+            )
+            subj = f"Disclosure access request for {prop_name}"
+        if seller_phone:
+            send_sms(seller_phone, msg)
+        if seller_email:
+            send_email(seller_email, subj, msg)
+        if agent_phone:
+            send_sms(agent_phone, msg)
+        if agent_email:
+            send_email(agent_email, subj, msg)
+    except Exception:
+        pass
+    return jsonify({"share_id": share_id, "approved": auto}), 201
 
 
 @app.route("/share/<share_id>/files", methods=["GET"])
@@ -979,6 +1191,9 @@ def share_download(share_id: str, filename: str) -> Any:
     safe_fn = secure_filename(filename)
     if safe_fn not in pkg["files"]:
         return jsonify({"error": "file not found in package"}), 404
+    # Check approval status; if not approved, return 403
+    if not share.get("approved", False):
+        return jsonify({"error": "download not approved"}), 403
     prop_id = pkg["property_id"]
     data = disclosures.get(prop_id, {}).get(safe_fn)
     if data is None:
@@ -1016,6 +1231,57 @@ def buyer_interest(property_id: str) -> Any:
                 "downloads": len(share.get("downloads", [])),
             })
     return jsonify(report)
+
+
+# -----------------------------------------------------------------------------
+# Share Approval Endpoint
+#
+# When a property requires disclosure approval, shares are created in a
+# not‑approved state.  Sellers or agents can call this endpoint to
+# approve a share, enabling the buyer to download disclosure files.
+@app.route("/share/<share_id>/approve", methods=["POST"])
+def approve_share(share_id: str) -> Any:
+    """
+    Approve a disclosure share so the buyer can download the files.
+    Returns the updated share record or 404 if the share does not exist.
+    """
+    share = package_shares.get(share_id)
+    if not share:
+        return jsonify({"error": "share not found"}), 404
+    if share.get("approved"):
+        return jsonify(share), 200
+    share["approved"] = True
+    # Log approval event
+    prop_id = share.get("property_id")
+    try:
+        log_event(prop_id, "share_approved", {"share_id": share_id, "buyer_name": share.get("buyer_name")})
+    except Exception:
+        pass
+    # Notify seller/agent that the share has been approved
+    try:
+        prop = properties.get(prop_id, {})
+        prop_name = prop.get("name", prop_id)
+        buyer_name = share.get("buyer_name")
+        msg_notify = (
+            f"Disclosure package share (ID: {share_id}) for {prop_name} has been approved.\n"
+            f"Buyer: {buyer_name}."
+        )
+        subj_notify = f"Disclosure share approved for {prop_name}"
+        seller_phone = prop.get("seller_phone")
+        seller_email = prop.get("seller_email")
+        agent_phone = prop.get("agent_phone")
+        agent_email = prop.get("agent_email")
+        if seller_phone:
+            send_sms(seller_phone, msg_notify)
+        if seller_email:
+            send_email(seller_email, subj_notify, msg_notify)
+        if agent_phone:
+            send_sms(agent_phone, msg_notify)
+        if agent_email:
+            send_email(agent_email, subj_notify, msg_notify)
+    except Exception:
+        pass
+    return jsonify(share)
 
 
 # -----------------------------------------------------------------------------
