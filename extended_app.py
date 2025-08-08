@@ -1046,6 +1046,65 @@ def offers_report(property_id: str) -> Any:
     return jsonify(report)
 
 
+@app.route("/properties/<property_id>/prospects", methods=["GET"])
+def property_prospects(property_id: str) -> Any:
+    """
+    Generate statistics about potential buyers and their agents for a listing.
+
+    This endpoint aggregates activity from showings, disclosure share downloads
+    and offers to provide insight into how engaged each buyer (or buyer
+    agent) is.  The response returns a dictionary keyed by buyer name with
+    counts of scheduled showings, approved showings, declined showings,
+    downloads from listing packages and submitted offers.
+    """
+    if property_id not in properties:
+        return jsonify({"error": "property not found"}), 404
+    stats: Dict[str, Dict[str, int]] = {}
+    # Aggregate showings
+    for s in showings.values():
+        if s["property_id"] != property_id:
+            continue
+        buyer = s.get("client_name") or "Unknown"
+        rec = stats.setdefault(buyer, {
+            "showings_requested": 0,
+            "showings_approved": 0,
+            "showings_declined": 0,
+            "downloads": 0,
+            "offers": 0,
+        })
+        rec["showings_requested"] += 1
+        status = s.get("status")
+        if status == "approved":
+            rec["showings_approved"] += 1
+        elif status == "declined":
+            rec["showings_declined"] += 1
+    # Aggregate downloads from shares
+    for share in package_shares.values():
+        if share["property_id"] != property_id:
+            continue
+        buyer = share.get("buyer_name") or "Unknown"
+        rec = stats.setdefault(buyer, {
+            "showings_requested": 0,
+            "showings_approved": 0,
+            "showings_declined": 0,
+            "downloads": 0,
+            "offers": 0,
+        })
+        rec["downloads"] += len(share.get("downloads", []))
+    # Aggregate offers
+    for offer in offers.get(property_id, []):
+        buyer = offer.get("buyer_name") or "Unknown"
+        rec = stats.setdefault(buyer, {
+            "showings_requested": 0,
+            "showings_approved": 0,
+            "showings_declined": 0,
+            "downloads": 0,
+            "offers": 0,
+        })
+        rec["offers"] += 1
+    return jsonify(stats)
+
+
 # -----------------------------------------------------------------------------
 # Administration UI
 #
