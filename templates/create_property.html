@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Create Property - ShowingHive</title>
+    <style>
+        :root {
+            --primary-color: #1E90FF;
+            --primary-hover: #0d6efd;
+        }
+        body {
+            font-family: Arial, sans-serif;
+            margin: 20px;
+        }
+        h1 {
+            color: var(--primary-color);
+        }
+        label {
+            display: block;
+            margin-top: 10px;
+        }
+        input[type="text"], input[type="email"] {
+            width: 300px;
+            padding: 5px;
+            margin-top: 5px;
+        }
+        .button {
+            display: inline-block;
+            padding: 8px 16px;
+            background-color: var(--primary-color);
+            color: white;
+            border: none;
+            border-radius: 4px;
+            margin-top: 15px;
+            cursor: pointer;
+        }
+        .button:hover {
+            background-color: var(--primary-hover);
+        }
+        .logo {
+            width: 150px;
+            margin-bottom: 20px;
+        }
+    </style>
+</head>
+<body>
+    <img src="{{ url_for('static', filename='showinghive_logo.jpg') }}" alt="ShowingHive Logo" class="logo">
+    <h1>Create New Property</h1>
+    <form method="post" action="{{ url_for('ui_create_property') }}">
+        <label>Name:
+            <input type="text" name="name" required>
+        </label>
+        <label>Address:
+            <input type="text" name="address" required>
+        </label>
+        <label>Seller Phone:
+            <input type="text" name="seller_phone">
+        </label>
+        <label>Seller Email:
+            <input type="email" name="seller_email">
+        </label>
+        <label>Agent Phone:
+            <input type="text" name="agent_phone">
+        </label>
+        <label>Agent Email:
+            <input type="email" name="agent_email">
+        </label>
+        <label>
+            <input type="checkbox" name="auto_approve_showings"> Auto-approve showings
+        </label>
+        <label>
+            <input type="checkbox" name="requires_disclosure_approval"> Require disclosure approval for packages
+        </label>
+        <button type="submit" class="button">Create Property</button>
+    </form>
+    <p><a href="{{ url_for('home') }}">Back to Home</a></p>
+</body>
+</html>
