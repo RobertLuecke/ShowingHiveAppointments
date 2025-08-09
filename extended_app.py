@@ -1909,6 +1909,53 @@ def ui_home() -> Any:
     current_year = datetime.now().year
     return render_template("home.html", properties=properties, current_year=current_year)
 
+# --------------------------------------------------------------------------
+# Additional routes and aliases to support navigation links
+#
+# Some templates reference 'home', 'manage_showings', and 'tasks' endpoints.
+# Register these endpoints here to avoid BuildError exceptions.
+
+# Alias '/' with endpoint name 'home' to map to ui_home
+app.add_url_rule("/", endpoint="home", view_func=ui_home)
+
+# Manage Showings & Disclosures page
+@app.route("/manage-showings")
+@login_required
+def manage_showings() -> Any:
+    """
+    Redirect to the home/dashboard page for managing showings and disclosures.
+    This route exists to satisfy navigation links in the templates.
+    """
+    return redirect(url_for("ui_home"))
+
+# Tasks page (placeholder)
+@app.route("/tasks")
+def tasks_page() -> Any:
+    """
+    Placeholder page for posting or doing tasks.
+    ShowingHive focuses on showings and disclosures; task management is not
+    implemented yet.
+    """
+    return render_template_string(
+        """<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <title>Tasks – Coming Soon</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 2rem; }
+        h1 { color: #00529B; }
+    </style>
+</head>
+<body>
+    <h1>Task Marketplace Coming Soon</h1>
+    <p>This section of ShowingHive will allow you to post and claim real estate
+    tasks in the future. Stay tuned!</p>
+    <p><a href="{{ url_for('ui_home') }}">Back to Home</a></p>
+</body>
+</html>"""
+    )
+
 
 @app.route("/properties/new", methods=["GET", "POST"])
 @login_required
