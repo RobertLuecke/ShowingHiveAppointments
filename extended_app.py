@@ -2998,9 +2998,37 @@ def ui_approve_share(share_id: str) -> Any:
 
 # Only run the development server if this module is executed directly.
 if __name__ == "__main__":
-    # Ensure database tables exist and load any existing records into memory
+    """
+    When executed directly, initialize the database schema and run the development server.
+
+    This block also performs a simple schema migration check: if the existing SQLite
+    database is missing the `role` column on the `user` table (introduced in
+    later versions of the app), it will drop all tables and recreate them with
+    the current schema. This destructive operation is intended for development
+    environments only. For production use, integrate a proper migration tool
+    such as Flask-Migrate/Alembic.
+    """
     with app.app_context():
+        from sqlalchemy import inspect
+
+        inspector = inspect(db.engine)
+        # Attempt to retrieve column names for the user table. If the table
+        # doesn't exist yet, this will simply return an empty list.
+        try:
+            user_columns = [col["name"] for col in inspector.get_columns("user")]
+        except Exception:
+            user_columns = []
+        # If the User model defines a role but the database is missing it, drop
+        # and recreate all tables to avoid OperationalError during queries.
+        if "role" not in user_columns:
+            db.drop_all()
+            print(
+                "Database schema outdated or missing role column; dropping and "
+                "recreating all tables with the updated schema. All existing data "
+                "will be lost."
+            )
         db.create_all()
+        # Load any existing records into in-memory structures for the demo
         load_db_into_memory()
     # Run the development server on port 3000 for demonstration purposes
     app.run(host="0.0.0.0", port=3000, debug=True)
