@@ -120,6 +120,10 @@ class User(db.Model, UserMixin):
     id = db.Column(db.Integer, primary_key=True)
     username = db.Column(db.String(80), unique=True, nullable=False)
     password = db.Column(db.String(120), nullable=False)
+    # Role distinguishes between agents and sellers. Agents can create and manage
+    # properties, while sellers can approve showings and disclosures for their own
+    # properties. Buyers do not authenticate and therefore do not have a role.
+    role = db.Column(db.String(20), nullable=False, default="agent")
 
 
 class PropertyModel(db.Model):
@@ -1872,7 +1876,11 @@ def register() -> Any:
         existing = User.query.filter_by(username=username).first()
         if existing:
             return render_template("register.html", error="Username already exists")
-        new_user = User(username=username, password=password)
+        # Determine the role from the registration form; default to agent if
+        # unspecified.  Sellers may register themselves and later be assigned
+        # to a property by an agent.
+        role = request.form.get("role") or "agent"
+        new_user = User(username=username, password=password, role=role)
         db.session.add(new_user)
         db.session.commit()
         login_user(new_user)
@@ -1927,6 +1935,300 @@ def manage_showings() -> Any:
     This route exists to satisfy navigation links in the templates.
     """
     return redirect(url_for("ui_home"))
+
+# --------------------------------------------------------------------------
+# Public listing routes
+#
+# Buyers and buyer agents do not need to authenticate to request showings or
+# disclosure packages.  Each property has a unique ``public_token`` that
+# generates a public URL.  The routes below render a simplified schedule
+# calendar and disclosure package list for buyers.  Buyers can select an
+# available slot to request a showing or request a disclosure package via
+# a simple form.  Seller/agent approvals and notifications use the same
+# underlying logic as the authenticated UI routes.
+
+@app.route("/public/property/<public_token>")
+def public_property(public_token: str) -> Any:
+    """Display a public schedule and disclosure list for a property.
+
+    This route does not require authentication.  It looks up the property by
+    ``public_token`` and, if found, builds a 7‑day schedule (8am–8pm) to
+    display as clickable slots.  Only packages marked ``is_public`` are shown
+    in the disclosure request form.
+    """
+    # Find the property by its public token
+    prop_id = None
+    for pid, prop in properties.items():
+        if prop.get("public_token") == public_token:
+            prop_id = pid
+            break
+    if not prop_id:
+        return "Property not found", 404
+    prop = properties.get(prop_id)
+    # Build weekly slots (8am–8pm) like the seller view
+    from datetime import date, time
+    today = date.today()
+    week_slots: List[Dict[str, Any]] = []
+    for offset in range(7):
+        day_date = today + timedelta(days=offset)
+        day_label = day_date.strftime("%a %b %d")
+        times_list: List[Dict[str, Any]] = []
+        for hour in range(8, 20):  # 8am to 7pm start times
+            slot_dt = datetime.combine(day_date, time(hour, 0))
+            iso_ts = slot_dt.strftime("%Y-%m-%dT%H:%M")
+            available = True
+            # Check existing showings
+            for s in showings.values():
+                if s["property_id"] == prop_id:
+                    start_dt = s["scheduled_at"] if isinstance(s["scheduled_at"], datetime) else datetime.fromisoformat(str(s["scheduled_at"]))
+                    end_dt = start_dt + timedelta(hours=1)
+                    if start_dt <= slot_dt < end_dt:
+                        available = False
+                        break
+            # Check blocked times
+            if available:
+                for b_start, b_end in blocked_times.get(prop_id, []):
+                    if b_start <= slot_dt < b_end:
+                        available = False
+                        break
+            times_list.append({
+                "iso": iso_ts,
+                "label": slot_dt.strftime("%-I:%M %p"),
+                "available": available,
+            })
+        week_slots.append({"date": day_label, "times": times_list})
+    # Filter packages for this property that are marked public
+    property_packages = [pkg for pkg in packages.values() if pkg["property_id"] == prop_id and pkg.get("is_public")]
+    return render_template("public_property.html", property=prop, week_slots=week_slots, packages=property_packages)
+
+
+@app.route("/public/property/<public_token>/schedule-slot/<scheduled_at>", methods=["GET", "POST"])
+def public_schedule_slot(public_token: str, scheduled_at: str) -> Any:
+    """Allow buyers to request a showing via a public link.
+
+    The GET request shows a simple form asking for buyer name and contact info.
+    The POST request schedules the showing if the slot is still available and
+    triggers notifications/approvals as in the authenticated flow.
+    """
+    # Find property by token
+    prop_id = None
+    for pid, prop in properties.items():
+        if prop.get("public_token") == public_token:
+            prop_id = pid
+            break
+    if not prop_id:
+        return "Property not found", 404
+    prop = properties.get(prop_id)
+    try:
+        slot_dt = datetime.fromisoformat(scheduled_at)
+    except Exception:
+        return redirect(url_for("public_property", public_token=public_token))
+    if request.method == "POST":
+        client_name = request.form.get("client_name")
+        client_phone = request.form.get("client_phone")
+        client_email = request.form.get("client_email")
+        # Ratings (optional) – new fields for house/price/quality
+        rating_house = request.form.get("rating_house")
+        rating_price = request.form.get("rating_price")
+        rating_quality = request.form.get("rating_quality")
+        if not client_name:
+            return render_template(
+                "schedule_slot.html",
+                property=prop,
+                property_id=prop_id,
+                scheduled_at=scheduled_at,
+                error="Name is required",
+            )
+        start = slot_dt
+        end = start + timedelta(hours=1)
+        # Check availability
+        if is_time_blocked(prop_id, start, end) or has_conflict(prop_id, start, end):
+            return render_template(
+                "schedule_slot.html",
+                property=prop,
+                property_id=prop_id,
+                scheduled_at=scheduled_at,
+                error="This slot is no longer available",
+            )
+        # Create showing
+        showing_id = str(uuid.uuid4())
+        showings[showing_id] = {
+            "id": showing_id,
+            "property_id": prop_id,
+            "scheduled_at": start,
+            "status": "pending",
+            "client_name": client_name,
+            "client_phone": client_phone,
+            "client_email": client_email,
+        }
+        # Persist to DB
+        db_showing = ShowingModel(
+            id=showing_id,
+            property_id=prop_id,
+            client_name=client_name,
+            client_phone=client_phone,
+            client_email=client_email,
+            scheduled_at=start,
+            status="pending",
+        )
+        db.session.add(db_showing)
+        db.session.commit()
+        # Send notifications and log event using existing code
+        try:
+            buyer_msg = f"Your showing request for {prop['name']} on {start.strftime('%Y-%m-%d %H:%M')} has been received and is pending approval."
+            if client_phone:
+                send_sms(client_phone, buyer_msg)
+            if client_email:
+                send_email(client_email, "Showing request received", buyer_msg)
+            contact_msg = f"New showing request for {prop['name']} at {start.strftime('%Y-%m-%d %H:%M')} from {client_name}."
+            for contact in [prop.get("seller_phone"), prop.get("agent_phone")]:
+                if contact:
+                    send_sms(contact, contact_msg)
+            for contact in [prop.get("seller_email"), prop.get("agent_email")]:
+                if contact:
+                    send_email(contact, "New showing request", contact_msg)
+            log_event(prop_id, "showing_requested", {"showing_id": showing_id, "client_name": client_name, "scheduled_at": start.isoformat()})
+            # Auto approve if configured
+            if prop.get("auto_approve_showings"):
+                s = showings[showing_id]
+                code = generate_lockbox_code()
+                s["lockbox_code"] = code
+                s["code_expires_at"] = s["scheduled_at"] + timedelta(hours=1, minutes=15)
+                s["status"] = "approved"
+                when2 = s["scheduled_at"].strftime("%Y-%m-%d %H:%M")
+                code_str = s["lockbox_code"]
+                expires_str = s["code_expires_at"].strftime("%Y-%m-%d %H:%M")
+                if client_phone:
+                    send_sms(client_phone, f"Your showing for {prop['name']} at {when2} has been approved. Lockbox code: {code_str} (expires {expires_str}).")
+                if client_email:
+                    send_email(client_email, "Showing approved", f"Hello {client_name},\n\nYour showing for {prop['name']} at {when2} has been approved.\nYour lockbox code is {code_str} and will expire at {expires_str}.\n\nThank you.")
+                msg_notify = (
+                    f"Showing for {prop['name']} on {when2} was automatically approved.\n"
+                    f"Buyer: {client_name}. Lockbox code: {code_str} (expires {expires_str}).\n"
+                    f"Showing ID: {showing_id}"
+                )
+                subj_notify = f"Showing auto‑approved for {prop['name']}"
+                for contact in [prop.get("seller_phone"), prop.get("agent_phone")]:
+                    if contact:
+                        send_sms(contact, msg_notify)
+                for contact in [prop.get("seller_email"), prop.get("agent_email")]:
+                    if contact:
+                        send_email(contact, subj_notify, msg_notify)
+                log_event(prop_id, "showing_approved", {"showing_id": showing_id, "client_name": client_name, "scheduled_at": start.isoformat(), "lockbox_code": code, "auto": True})
+        except Exception:
+            pass
+        # Optionally store ratings for the property (if provided).  We attach them
+        # as feedback entries keyed by showing ID so sellers can see buyer
+        # sentiment later.
+        if rating_house or rating_price or rating_quality:
+            feedback_store.setdefault(showing_id, []).append({
+                "rating_house": rating_house,
+                "rating_price": rating_price,
+                "rating_quality": rating_quality,
+                "comment": None,
+                "timestamp": datetime.utcnow(),
+            })
+        return redirect(url_for("public_property", public_token=public_token))
+    # GET: show form
+    return render_template(
+        "schedule_slot.html",
+        property=prop,
+        property_id=prop_id,
+        scheduled_at=scheduled_at,
+        form_action=url_for("public_schedule_slot", public_token=public_token, scheduled_at=scheduled_at),
+        back_link=url_for("public_property", public_token=public_token),
+    )
+
+
+@app.route("/public/property/<public_token>/request-package", methods=["POST"])
+def public_request_package(public_token: str) -> Any:
+    """Handle disclosure package requests from the public page.
+
+    Buyers choose a public package and provide their name and contact info.
+    The property settings control whether the request is auto‑approved or
+    requires manual approval.  Notifications are sent to the seller/agent and
+    buyer accordingly.
+    """
+    # Find property by token
+    prop_id = None
+    for pid, prop in properties.items():
+        if prop.get("public_token") == public_token:
+            prop_id = pid
+            break
+    if not prop_id:
+        return "Property not found", 404
+    prop = properties.get(prop_id)
+    pkg_id = request.form.get("package_id")
+    buyer_name = request.form.get("buyer_name")
+    buyer_phone = request.form.get("buyer_phone")
+    buyer_email = request.form.get("buyer_email")
+    if not pkg_id or not buyer_name:
+        return redirect(url_for("public_property", public_token=public_token))
+    pkg = packages.get(pkg_id)
+    if not pkg or pkg.get("property_id") != prop_id:
+        return redirect(url_for("public_property", public_token=public_token))
+    # Determine auto approval based on property setting
+    auto = not prop.get("requires_disclosure_approval")
+    share_id = str(uuid.uuid4())
+    package_shares[share_id] = {
+        "id": share_id,
+        "package_id": pkg_id,
+        "property_id": prop_id,
+        "buyer_name": buyer_name,
+        "buyer_phone": buyer_phone,
+        "buyer_email": buyer_email,
+        "downloads": [],
+        "approved": auto,
+    }
+    # Notify seller/agent
+    try:
+        prop_name = prop.get("name", prop_id)
+        if auto:
+            msg = (
+                f"Disclosure package '{pkg['name']}' for {prop_name} was automatically shared with buyer {buyer_name}."
+                f" (Share ID: {share_id})"
+            )
+            subj = f"Disclosure package shared for {prop_name}"
+        else:
+            msg = (
+                f"Buyer {buyer_name} has requested access to disclosure package '{pkg['name']}' for {prop_name}.\n"
+                f"Approve the share via your dashboard. Share ID: {share_id}."
+            )
+            subj = f"Disclosure access request for {prop_name}"
+        for contact in [prop.get("seller_phone"), prop.get("agent_phone")]:
+            if contact:
+                send_sms(contact, msg)
+        for contact in [prop.get("seller_email"), prop.get("agent_email")]:
+            if contact:
+                send_email(contact, subj, msg)
+    except Exception:
+        pass
+    # Notify buyer
+    try:
+        if auto:
+            buyer_msg = (
+                f"You have been granted access to disclosure package '{pkg['name']}' for {prop['name']}'.\n"
+                f"Use your share ID {share_id} to download the files."
+            )
+            buyer_subj = f"Disclosure package available for {prop['name']}"
+        else:
+            buyer_msg = (
+                f"Your request to access disclosure package '{pkg['name']}' for {prop['name']}' has been received and is pending approval.\n"
+                f"You will be notified when access is granted."
+            )
+            buyer_subj = f"Disclosure access request received for {prop['name']}"
+        if buyer_phone:
+            send_sms(buyer_phone, buyer_msg)
+        if buyer_email:
+            send_email(buyer_email, buyer_subj, buyer_msg)
+    except Exception:
+        pass
+    # Log share creation
+    try:
+        log_event(prop_id, "share_created", {"share_id": share_id, "package_id": pkg_id, "buyer_name": buyer_name, "auto": auto})
+    except Exception:
+        pass
+    return redirect(url_for("public_property", public_token=public_token))
 
 # Tasks page (placeholder)
 @app.route("/tasks")
@@ -1984,6 +2286,12 @@ def ui_create_property() -> Any:
         auto_approve = parse_bool(request.form.get("auto_approve_showings"))
         req_disc_approval = parse_bool(request.form.get("requires_disclosure_approval"))
         prop_id = str(uuid.uuid4())
+        # Generate a unique public token for buyers to access the public schedule
+        public_token = uuid.uuid4().hex
+        # Determine seller for this property.  If the logged‑in user is a seller,
+        # assign them; otherwise assign the current agent (so sellers can later
+        # approve showings/disclosures).
+        seller_id = current_user.id if current_user.role == "seller" else current_user.id
         properties[prop_id] = {
             "id": prop_id,
             "name": name,
@@ -1997,6 +2305,8 @@ def ui_create_property() -> Any:
             "agent_email": agent_email,
             "auto_approve_showings": auto_approve,
             "requires_disclosure_approval": req_disc_approval,
+            "seller_id": seller_id,
+            "public_token": public_token,
         }
         # Persist the property in the database
         db_prop = PropertyModel(
