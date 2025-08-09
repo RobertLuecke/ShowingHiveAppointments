@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <title>Schedule Showing</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            padding: 2rem;
+            background-color: #f9fafb;
+            color: #1e293b;
+        }
+        h2 {
+            color: #00529B;
+            margin-bottom: 0.5rem;
+        }
+        .card {
+            background: white;
+            border: 1px solid #e2e8f0;
+            border-radius: 8px;
+            padding: 1.5rem;
+            max-width: 500px;
+            margin: auto;
+        }
+        label {
+            display: block;
+            margin-bottom: 0.5rem;
+        }
+        input[type="text"], input[type="email"] {
+            width: 100%;
+            padding: 0.5rem;
+            border: 1px solid #cbd5e1;
+            border-radius: 4px;
+            margin-top: 0.2rem;
+        }
+        button {
+            margin-top: 1rem;
+            background-color: #00529B;
+            color: white;
+            padding: 0.5rem 1rem;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+        button:hover {
+            opacity: 0.9;
+        }
+        .error {
+            color: #c53030;
+            margin-bottom: 1rem;
+        }
+    </style>
+</head>
+<body>
+    <div class="card">
+        <h2>Schedule a Showing</h2>
+        <p>Property: <strong>{{ property.name }}</strong></p>
+        <p>Selected time: <strong>{{ scheduled_at.replace('T', ' ') }}</strong></p>
+        {% if error %}
+            <div class="error">{{ error }}</div>
+        {% endif %}
+        <form method="post" action="{{ url_for('ui_schedule_slot', property_id=property_id, scheduled_at=scheduled_at) }}">
+            <label>
+                Your Name
+                <input type="text" name="client_name" required>
+            </label>
+            <label>
+                Phone (optional)
+                <input type="text" name="client_phone">
+            </label>
+            <label>
+                Email (optional)
+                <input type="email" name="client_email">
+            </label>
+            <button type="submit">Request Showing</button>
+        </form>
+        <p style="margin-top: 1rem;"><a href="{{ url_for('ui_property_detail', property_id=property_id) }}">Back to Property</a></p>
+    </div>
+</body>
+</html>
