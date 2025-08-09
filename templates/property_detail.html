@@ -1,199 +1,218 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Property Detail - ShowingHive</title>
+    <meta charset="utf-8">
+    <title>{{ property['name'] }} – ShowingHive</title>
     <style>
+        /* ShopProp blue branding */
         :root {
             --primary-color: #1E90FF;
             --primary-hover: #0d6efd;
         }
         body {
-            font-family: Arial, sans-serif;
-            margin: 20px;
+            font-family: sans-serif;
+            margin: 2rem;
         }
-        h1 {
+        h1, h2, h3 {
             color: var(--primary-color);
         }
-        h2 {
-            color: var(--primary-color);
-            margin-top: 30px;
-        }
-        label {
-            display: block;
-            margin-top: 10px;
-        }
-        input[type="text"], input[type="email"], input[type="datetime-local"], select {
-            width: 300px;
-            padding: 5px;
-            margin-top: 5px;
-        }
-        .button {
-            display: inline-block;
-            padding: 6px 12px;
-            background-color: var(--primary-color);
-            color: white;
-            border: none;
-            border-radius: 4px;
-            margin-top: 10px;
-            cursor: pointer;
-        }
-        .button:hover {
-            background-color: var(--primary-hover);
-        }
-        .logo {
-            width: 150px;
-            margin-bottom: 20px;
+        section {
+            margin-bottom: 2rem;
         }
         ul {
             list-style-type: none;
             padding-left: 0;
         }
         li {
-            margin-bottom: 10px;
+            margin-bottom: 0.5rem;
         }
-        .showing-actions form {
-            display: inline-block;
-            margin-right: 5px;
+        form.inline {
+            display: inline;
+            margin-right: 0.5rem;
         }
-        .section {
-            border-top: 1px solid #ccc;
-            padding-top: 15px;
-            margin-top: 15px;
+        a {
+            color: var(--primary-color);
+        }
+        button {
+            background-color: var(--primary-color);
+            color: #ffffff;
+            border: none;
+            padding: 0.3rem 0.6rem;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+        button:hover {
+            background-color: var(--primary-hover);
+        }
+        input[type="text"], input[type="email"] {
+            padding: 0.3rem;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+            margin-bottom: 0.5rem;
+        }
+        select {
+            padding: 0.3rem;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+            margin-bottom: 0.5rem;
         }
     </style>
 </head>
 <body>
-    <img src="{{ url_for('static', filename='showinghive_logo.jpg') }}" alt="ShowingHive Logo" class="logo">
+    <!-- Authentication links -->
+    <p style="text-align: right; font-size: 0.9rem;">
+        {% if current_user.is_authenticated %}
+            Logged in as {{ current_user.username }} | <a href="{{ url_for('logout') }}">Logout</a>
+        {% else %}
+            <a href="{{ url_for('login') }}">Login</a> | <a href="{{ url_for('register') }}">Register</a>
+        {% endif %}
+    </p>
+    <!-- Logo -->
+    <img src="{{ url_for('static', filename='showinghive_logo.jpg') }}" alt="ShowingHive Logo" style="height: 80px;">
     <h1>{{ property['name'] }}</h1>
-    <p><strong>Address:</strong> {{ property['address'] }}</p>
+    <p>{{ property['address'] }}</p>
 
-    <div class="section">
+    <section>
         <h2>Schedule a Showing</h2>
-        <form method="post" action="{{ url_for('ui_schedule_showing', property_id=property_id) }}">
-            <label>Client Name:
-                <input type="text" name="client_name" required>
-            </label>
-            <label>Client Phone:
-                <input type="text" name="client_phone">
-            </label>
-            <label>Client Email:
-                <input type="email" name="client_email">
-            </label>
-            <label>Scheduled Time:
-                <input type="datetime-local" name="scheduled_at" required>
-            </label>
-            <button type="submit" class="button">Request Showing</button>
+        <form method="post" action="{{ url_for('ui_schedule_showing', property_id=property['id']) }}">
+            <label>Client Name: <input type="text" name="client_name" required></label><br>
+            <label>Client Phone: <input type="text" name="client_phone"></label><br>
+            <label>Client Email: <input type="email" name="client_email"></label><br>
+            <label>Scheduled At: <input type="text" name="scheduled_at" placeholder="YYYY-MM-DDTHH:MM" required></label><br>
+            <button type="submit">Request Showing</button>
         </form>
-    </div>
+    </section>
 
-    <div class="section">
+    <section>
+        <h2>Available Slots (Next 7 Days)</h2>
+        <p>Select a slot below to request a showing. Unavailable slots are grayed out.</p>
+        <table style="width:100%; border-collapse: collapse;">
+            <thead>
+                <tr>
+                    <th style="text-align:left; padding:0.5rem; border-bottom: 1px solid #ccc;">Date</th>
+                    <th style="text-align:left; padding:0.5rem; border-bottom: 1px solid #ccc;">Times</th>
+                </tr>
+            </thead>
+            <tbody>
+            {% for day in week_slots %}
+                <tr>
+                    <td style="vertical-align: top; padding:0.5rem; border-bottom: 1px solid #eee; width: 150px;">{{ day.date }}</td>
+                    <td style="padding:0.5rem; border-bottom: 1px solid #eee;">
+                        {% for slot in day.times %}
+                            {% if slot.available %}
+                                <a href="{{ url_for('ui_schedule_slot', property_id=property['id'], scheduled_at=slot.iso) }}" style="margin-right:8px; color: var(--primary-color); text-decoration: none;">{{ slot.label }}</a>
+                            {% else %}
+                                <span style="margin-right:8px; color:#ccc;">{{ slot.label }}</span>
+                            {% endif %}
+                        {% endfor %}
+                    </td>
+                </tr>
+            {% endfor %}
+            </tbody>
+        </table>
+    </section>
+
+    <section>
         <h2>Showings</h2>
         <ul>
-            {% for sid, showing in property_showings.items() %}
+        {% for s in showings %}
             <li>
-                <strong>{{ showing['scheduled_at'] }}</strong> – Status: {{ showing['status'] }}<br>
-                {% if showing['status'] == 'pending' %}
-                <div class="showing-actions">
-                    <form method="post" action="{{ url_for('ui_approve_showing', property_id=property_id, showing_id=sid) }}">
-                        <button type="submit" class="button">Approve</button>
+                {{ s['scheduled_at'].strftime('%Y-%m-%d %H:%M') }} – {{ s['client_name'] }} – Status: {{ s['status'] }}
+                {% if s['status'] == 'pending' %}
+                    <form method="post" action="{{ url_for('ui_approve_showing', showing_id=s['id']) }}" class="inline">
+                        <button type="submit">Approve</button>
                     </form>
-                    <form method="post" action="{{ url_for('ui_decline_showing', property_id=property_id, showing_id=sid) }}">
-                        <button type="submit" class="button">Decline</button>
+                    <form method="post" action="{{ url_for('ui_decline_showing', showing_id=s['id']) }}" class="inline">
+                        <button type="submit">Decline</button>
                     </form>
-                    <form method="post" action="{{ url_for('ui_reschedule_showing', property_id=property_id, showing_id=sid) }}">
-                        <input type="datetime-local" name="scheduled_at" required>
-                        <button type="submit" class="button">Suggest New Time</button>
+                    <form method="post" action="{{ url_for('ui_reschedule_showing', showing_id=s['id']) }}" class="inline">
+                        <input type="text" name="new_time" placeholder="YYYY-MM-DDTHH:MM" required>
+                        <button type="submit">Reschedule</button>
                     </form>
-                </div>
-                {% elif showing['status'] == 'approved' %}
-                <div>Lockbox Code: {{ showing['lockbox_code'] }} (expires {{ showing['expires_at'] }})</div>
                 {% endif %}
-                {% if showing.get('feedback') %}
-                <div>Feedback: {{ showing['feedback']['rating'] }}/5 – {{ showing['feedback']['comment'] }}</div>
+                {% if s['status'] == 'approved' %}
+                    <span>Lockbox: {{ s.get('lockbox_code') }} (expires {{ s.get('code_expires_at').strftime('%Y-%m-%d %H:%M') if s.get('code_expires_at') else '' }})</span>
                 {% endif %}
             </li>
-            {% else %}
+        {% else %}
             <li>No showings scheduled.</li>
-            {% endfor %}
+        {% endfor %}
         </ul>
-    </div>
+    </section>
 
-    <div class="section">
+    <section>
+        <h2>Blocked Times</h2>
+        <p>The property is generally available between 8am and 8pm each day.  Use this section to block
+        additional times when showings should not be scheduled.</p>
+        <ul>
+        {% for block in blocks %}
+            <li>{{ block[0].strftime('%Y-%m-%d %H:%M') }} – {{ block[1].strftime('%Y-%m-%d %H:%M') }}</li>
+        {% else %}
+            <li>No blocked times.</li>
+        {% endfor %}
+        </ul>
+        <h3>Add Blocked Time Range</h3>
+        <form method="post" action="{{ url_for('ui_add_block_time', property_id=property['id']) }}">
+            <label>Start: <input type="datetime-local" name="start" required></label><br>
+            <label>End: <input type="datetime-local" name="end" required></label><br>
+            <button type="submit">Block Time</button>
+        </form>
+    </section>
+
+    <section>
         <h2>Disclosures</h2>
-        <h3>Upload a Disclosure</h3>
-        <form method="post" action="{{ url_for('ui_upload_disclosure', property_id=property_id) }}" enctype="multipart/form-data">
+        <h3>Upload Document</h3>
+        <form method="post" action="{{ url_for('ui_upload_disclosure', property_id=property['id']) }}" enctype="multipart/form-data">
             <input type="file" name="file" required>
-            <button type="submit" class="button">Upload File</button>
+            <button type="submit">Upload</button>
         </form>
-
-        <h3>Create a Package</h3>
-        <form method="post" action="{{ url_for('ui_create_package', property_id=property_id) }}">
-            <label>Package Name:
-                <input type="text" name="name" required>
-            </label>
-            <label>Files:
-                <select name="files" multiple size="5">
-                    {% for fname in property_disclosures %}
-                    <option value="{{ fname }}">{{ fname }}</option>
-                    {% else %}
-                    <option value="" disabled>No disclosures uploaded</option>
-                    {% endfor %}
-                </select>
-            </label>
-            <label>
-                <input type="checkbox" name="is_public"> Public package
-            </label>
-            <button type="submit" class="button">Create Package</button>
+        <p>Files: {% for f in files %}{{ f }} {% endfor %}</p>
+        <h3>Create Package</h3>
+        <form method="post" action="{{ url_for('ui_create_package', property_id=property['id']) }}">
+            <label>Package Name: <input type="text" name="name" required></label><br>
+            <label>Files (comma separated): <input type="text" name="files" placeholder="file1.pdf,file2.pdf" required></label><br>
+            <label><input type="checkbox" name="is_public"> Public</label><br>
+            <button type="submit">Create Package</button>
         </form>
-
         <h3>Packages</h3>
         <ul>
-            {% for pkg_id, package in packages.items() %}
-            <li>{{ package['name'] }} – Files: {{ package['files']|join(', ') }} – Public: {{ 'Yes' if package['is_public'] else 'No' }}</li>
-            {% else %}
+        {% for pkg in packages %}
+            <li>{{ pkg['name'] }} (ID: {{ pkg['id'] }}) – Files: {{ ', '.join(pkg['files']) }} – Public: {{ 'Yes' if pkg['is_public'] else 'No' }}</li>
+        {% else %}
             <li>No packages created.</li>
-            {% endfor %}
+        {% endfor %}
         </ul>
-
-        <h3>Request a Disclosure Package</h3>
-        <form method="post" action="{{ url_for('ui_request_disclosure', property_id=property_id) }}">
-            <label>Select Package:
+        <h3>Request Disclosure Package</h3>
+        <form method="post" action="{{ url_for('ui_request_disclosure', property_id=property['id']) }}">
+            <label>Package:
                 <select name="package_id" required>
-                    {% for pkg_id, package in packages.items() %}
-                    <option value="{{ pkg_id }}">{{ package['name'] }}</option>
-                    {% else %}
-                    <option value="" disabled>No packages available</option>
+                    {% for pkg in packages %}
+                        <option value="{{ pkg['id'] }}">{{ pkg['name'] }}</option>
                     {% endfor %}
                 </select>
-            </label>
-            <label>Buyer Name:
-                <input type="text" name="buyer_name" required>
-            </label>
-            <label>Buyer Phone:
-                <input type="text" name="buyer_phone">
-            </label>
-            <label>Buyer Email:
-                <input type="email" name="buyer_email">
-            </label>
-            <button type="submit" class="button">Request Package</button>
+            </label><br>
+            <label>Buyer Name: <input type="text" name="buyer_name" required></label><br>
+            <label>Buyer Phone: <input type="text" name="buyer_phone"></label><br>
+            <label>Buyer Email: <input type="email" name="buyer_email"></label><br>
+            <button type="submit">Request Package</button>
         </form>
-
         <h3>Shares</h3>
         <ul>
-            {% for share_id, share in shares.items() %}
-            <li>Package: {{ packages[share['package_id']]['name'] }} – Buyer: {{ share['buyer_name'] }} – Approved: {{ 'Yes' if share['approved'] else 'No' }}
-                {% if not share['approved'] %}
-                <form method="post" action="{{ url_for('ui_approve_share', property_id=property_id, share_id=share_id) }}" style="display:inline-block;">
-                    <button type="submit" class="button">Approve Share</button>
-                </form>
+        {% for sh in shares %}
+            <li>
+                ID: {{ sh['id'] }} – Buyer: {{ sh['buyer_name'] }} – Approved: {{ 'Yes' if sh['approved'] else 'No' }}
+                {% if not sh['approved'] %}
+                    <form method="post" action="{{ url_for('ui_approve_share', share_id=sh['id']) }}" class="inline">
+                        <button type="submit">Approve</button>
+                    </form>
                 {% endif %}
             </li>
-            {% else %}
-            <li>No shares created.</li>
-            {% endfor %}
+        {% else %}
+            <li>No shares yet.</li>
+        {% endfor %}
         </ul>
-    </div>
+    </section>
 
-    <p><a href="{{ url_for('home') }}">Back to Home</a></p>
+    <p><a href="{{ url_for('ui_home') }}">Back to Home</a></p>
 </body>
 </html>
