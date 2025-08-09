@@ -2034,6 +2034,41 @@ def ui_property_detail(property_id: str) -> Any:
     property_shares = [sh for sh in package_shares.values() if sh["property_id"] == property_id]
     # List uploaded disclosure files
     files = list(disclosures.get(property_id, {}).keys())
+    # Build a weekly schedule (next 7 days, default 8am-8pm) to display as calendar slots
+    # If you wish to change the default hours, adjust the range below.
+    from datetime import datetime, timedelta, time, date
+    today = date.today()
+    week_slots: List[Dict[str, Any]] = []
+    for offset in range(7):
+        day_date = today + timedelta(days=offset)
+        day_label = day_date.strftime("%a %b %d")
+        times_list: List[Dict[str, Any]] = []
+        # Hours 8 through 19 (8am to 7pm start times). Adjust end+1 for inclusive end.
+        for hour in range(8, 20):
+            slot_dt = datetime.combine(day_date, time(hour, 0))
+            iso_ts = slot_dt.strftime("%Y-%m-%dT%H:%M")
+            available = True
+            # Check conflicts with existing showings (one‑hour duration)
+            for s in showings.values():
+                if s["property_id"] == property_id:
+                    start_dt = datetime.fromisoformat(s["scheduled_at"])
+                    end_dt = start_dt + timedelta(hours=1)
+                    if start_dt <= slot_dt < end_dt:
+                        available = False
+                        break
+            # Check blocked times
+            if available:
+                for b_start, b_end in blocked_times.get(property_id, []):
+                    # b_start and b_end are datetime objects
+                    if b_start <= slot_dt < b_end:
+                        available = False
+                        break
+            times_list.append({
+                "iso": iso_ts,
+                "label": slot_dt.strftime("%-I:%M %p"),
+                "available": available,
+            })
+        week_slots.append({"date": day_label, "times": times_list})
     return render_template(
         "property_detail.html",
         property=prop,
@@ -2041,7 +2076,48 @@ def ui_property_detail(property_id: str) -> Any:
         packages=property_packages,
         shares=property_shares,
         files=files,
+        week_slots=week_slots,
+        blocks=blocked_times.get(property_id, []),
     )
+
+
+# -----------------------------------------------------------------------------
+# UI route for adding blocked times
+
+@app.route("/properties/<property_id>/block", methods=["POST"])
+@login_required
+def ui_add_block_time(property_id: str) -> Any:
+    """
+    Add a blocked time range for a property from the UI.  Expects
+    form fields ``start`` and ``end`` as ISO datetimes (e.g. from
+    ``datetime-local`` inputs).  After adding the block, the user is
+    redirected back to the property detail page.  Overlapping blocks
+    are silently ignored (no new block is added).
+    """
+    prop = properties.get(property_id)
+    if not prop:
+        return "Property not found", 404
+    start_str = request.form.get("start")
+    end_str = request.form.get("end")
+    try:
+        start_dt = datetime.fromisoformat(start_str)
+        end_dt = datetime.fromisoformat(end_str)
+    except Exception:
+        # Invalid inputs; just redirect back
+        return redirect(url_for("ui_property_detail", property_id=property_id))
+    if end_dt <= start_dt:
+        return redirect(url_for("ui_property_detail", property_id=property_id))
+    # Check overlap with existing blocks
+    overlaps = False
+    for b_start, b_end in blocked_times.get(property_id, []):
+        if start_dt < b_end and end_dt > b_start:
+            overlaps = True
+            break
+    if not overlaps:
+        blocked_times.setdefault(property_id, []).append((start_dt, end_dt))
+        # Optionally sort blocked ranges for easier reading
+        blocked_times[property_id].sort(key=lambda x: x[0])
+    return redirect(url_for("ui_property_detail", property_id=property_id))
 
 
 @app.route("/properties/<property_id>/schedule_showing", methods=["POST"])
@@ -2171,6 +2247,101 @@ def ui_schedule_showing(property_id: str) -> Any:
     except Exception:
         pass
     return redirect(url_for("ui_property_detail", property_id=property_id))
+
+# -----------------------------------------------------------------------------
+# UI endpoint for scheduling a showing via a specific time slot
+#
+# This route is used when a user clicks on a calendar slot in the property
+# detail page.  The GET request displays a form asking for client name and
+# contact information; the POST request schedules the showing using the
+# provided details.
+@app.route("/properties/<property_id>/schedule-slot/<scheduled_at>", methods=["GET", "POST"])
+def ui_schedule_slot(property_id: str, scheduled_at: str) -> Any:
+    prop = properties.get(property_id)
+    if not prop:
+        return "Property not found", 404
+    # Parse scheduled_at param
+    try:
+        slot_dt = datetime.fromisoformat(scheduled_at)
+    except Exception:
+        return redirect(url_for("ui_property_detail", property_id=property_id))
+    if request.method == "POST":
+        client_name = request.form.get("client_name")
+        client_phone = request.form.get("client_phone")
+        client_email = request.form.get("client_email")
+        if not client_name:
+            return render_template(
+                "schedule_slot.html",
+                property=prop,
+                property_id=property_id,
+                scheduled_at=scheduled_at,
+                error="Client name is required",
+            )
+        # Check availability (re-use conflict logic)
+        start = slot_dt
+        end = start + timedelta(hours=1)
+        if is_time_blocked(property_id, start, end) or has_conflict(property_id, start, end):
+            return render_template(
+                "schedule_slot.html",
+                property=prop,
+                property_id=property_id,
+                scheduled_at=scheduled_at,
+                error="This slot is no longer available",
+            )
+        # Create showing
+        showing_id = str(uuid.uuid4())
+        showings[showing_id] = {
+            "id": showing_id,
+            "property_id": property_id,
+            "scheduled_at": scheduled_at,
+            "status": "pending",
+            "client_name": client_name,
+            "client_phone": client_phone,
+            "client_email": client_email,
+        }
+        # Notify buyer and property contacts
+        buyer_msg = f"Your showing request for {prop['name']} on {slot_dt.strftime('%Y-%m-%d %I:%M %p')} has been received and is pending approval."
+        if client_phone:
+            send_sms(client_phone, buyer_msg)
+        if client_email:
+            send_email(client_email, "Showing request received", buyer_msg)
+        # Notify seller/agent
+        contact_msg = f"New showing request for {prop['name']} at {slot_dt.strftime('%Y-%m-%d %I:%M %p')} from {client_name}."
+        for contact in [prop.get("seller_phone"), prop.get("agent_phone")]:
+            if contact:
+                send_sms(contact, contact_msg)
+        for contact in [prop.get("seller_email"), prop.get("agent_email")]:
+            if contact:
+                send_email(contact, "New showing request", contact_msg)
+        log_event("showing_requested", property_id, showing_id, details={"client_name": client_name})
+        # Auto-approve if property has auto_approve_showings
+        if prop.get("auto_approve_showings"):
+            showings[showing_id]["status"] = "approved"
+            code, expires = generate_lockbox_code(showing_id)
+            showings[showing_id]["code"] = code
+            showings[showing_id]["expires_at"] = expires.isoformat()
+            log_event("showing_approved", property_id, showing_id)
+            # Notify buyer with lockbox code
+            approval_msg = f"Your showing at {prop['name']} on {slot_dt.strftime('%Y-%m-%d %I:%M %p')} has been approved.\nLockbox code: {code} (expires {expires.strftime('%Y-%m-%d %I:%M %p')})."
+            if client_phone:
+                send_sms(client_phone, approval_msg)
+            if client_email:
+                send_email(client_email, "Showing approved", approval_msg)
+            # Notify seller/agent
+            for contact in [prop.get("seller_phone"), prop.get("agent_phone")]:
+                if contact:
+                    send_sms(contact, approval_msg)
+            for contact in [prop.get("seller_email"), prop.get("agent_email")]:
+                if contact:
+                    send_email(contact, "Showing auto-approved", approval_msg)
+        return redirect(url_for("ui_property_detail", property_id=property_id))
+    # GET: show schedule form
+    return render_template(
+        "schedule_slot.html",
+        property=prop,
+        property_id=property_id,
+        scheduled_at=scheduled_at,
+    )
 
 
 @app.route("/showings/<showing_id>/approve_ui", methods=["POST"])
