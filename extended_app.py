@@ -1904,7 +1904,10 @@ def logout() -> Any:
 @app.route("/")
 def ui_home() -> Any:
     """Render a homepage listing all properties with links to view details."""
-    return render_template("home.html", properties=properties)
+    # Pass current year for footer in home template to avoid UndefinedError
+    from datetime import datetime
+    current_year = datetime.now().year
+    return render_template("home.html", properties=properties, current_year=current_year)
 
 
 @app.route("/properties/new", methods=["GET", "POST"])
