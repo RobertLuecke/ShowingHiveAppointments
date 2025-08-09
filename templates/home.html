@@ -1,64 +1,444 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
-    <title>ShowingHive - Home</title>
+    <meta charset="utf-8">
+    <title>ShowingHive – Home</title>
+    <!-- Inline styles to provide a modern, branded landing page.  -->
     <style>
         :root {
-            --primary-color: #1E90FF;
-            --primary-hover: #0d6efd;
+            /* ShopProp / ShowingHive colour palette */
+            --primary-color: #00529B;
+            --primary-hover: #004080;
+            --light-bg: #E6F1FF;
+            --light-border: #E2E8F0;
         }
         body {
+            margin: 0;
             font-family: Arial, sans-serif;
-            margin: 20px;
+            background-color: #ffffff;
+            color: #1e293b;
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
         }
-        h1 {
-            color: var(--primary-color);
+        /* Top bar */
+        header {
+            width: 100%;
+            border-bottom: 1px solid rgba(226, 232, 240, 0.7);
+            background-color: #ffffff;
         }
-        a {
+        .top-container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 0 1rem;
+            height: 64px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+        .logo-container {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+        }
+        .logo-container img {
+            height: 40px;
+            width: auto;
+            cursor: pointer;
+        }
+        .logo-text {
+            font-weight: bold;
             color: var(--primary-color);
+            cursor: pointer;
+        }
+        .auth-links {
+            font-size: 0.9rem;
+        }
+        .auth-links a {
+            color: var(--primary-color);
+            margin-left: 1rem;
             text-decoration: none;
         }
-        a:hover {
-            color: var(--primary-hover);
+        .auth-links a:hover {
+            text-decoration: underline;
         }
-        ul {
-            list-style-type: none;
-            padding: 0;
+        .powered-by {
+            font-size: 0.85rem;
+            color: #64748b;
         }
-        li {
-            margin-bottom: 5px;
+        .powered-by span {
+            font-weight: 600;
+            color: var(--primary-color);
         }
-        .logo {
-            width: 150px;
-            margin-bottom: 20px;
+        /* Hero section */
+        .hero {
+            position: relative;
+            background: linear-gradient(to bottom right, var(--light-bg), #ffffff);
+            padding: 4rem 1rem;
         }
-        .button {
-            display: inline-block;
-            padding: 8px 16px;
-            background-color: var(--primary-color);
-            color: white;
-            border: none;
-            border-radius: 4px;
+        .hero .container {
+            max-width: 1200px;
+            margin: 0 auto;
             text-align: center;
         }
-        .button:hover {
-            background-color: var(--primary-hover);
+        .hero h1 {
+            font-size: 2rem;
+            font-weight: 800;
+            color: #1e293b;
+            margin-bottom: 1rem;
+        }
+        @media (min-width: 640px) {
+            .hero h1 { font-size: 3rem; }
+        }
+        .hero p {
+            max-width: 700px;
+            margin: 0.75rem auto 1.5rem;
+            font-size: 1rem;
+            color: #475569;
+        }
+        .hero p span {
+            font-weight: 600;
+            color: var(--primary-color);
+        }
+        .hero-buttons {
+            display: flex;
+            flex-direction: column;
+            gap: 0.75rem;
+            align-items: center;
+        }
+        @media (min-width: 640px) {
+            .hero-buttons { flex-direction: row; }
+        }
+        .btn {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            border-radius: 0.75rem;
+            padding: 0.75rem 1.5rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: opacity 0.15s ease-in-out;
+        }
+        .btn-primary {
+            background-color: var(--primary-color);
+            color: #ffffff;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        .btn-primary:hover {
+            opacity: 0.95;
+        }
+        .btn-secondary {
+            border: 1px solid rgba(0, 82, 155, 0.3);
+            color: var(--primary-color);
+        }
+        .btn-secondary:hover {
+            background-color: rgba(0, 82, 155, 0.05);
+        }
+        /* Stats section */
+        .stats-grid {
+            display: grid;
+            grid-template-columns: 1fr;
+            gap: 1rem;
+            margin-top: 2rem;
+        }
+        @media (min-width: 640px) {
+            .stats-grid { grid-template-columns: repeat(3, 1fr); }
+        }
+        .stat-card {
+            background-color: #ffffff;
+            border: 1px solid var(--light-border);
+            border-radius: 0.75rem;
+            padding: 1rem;
+            text-align: center;
+        }
+        .stat-card .value {
+            font-size: 1.25rem;
+            font-weight: 700;
+        }
+        .stat-card .label {
+            font-size: 0.875rem;
+            color: #475569;
+        }
+        /* Two cards section */
+        .cards-section {
+            padding: 3rem 1rem;
+        }
+        .cards-grid {
+            display: grid;
+            grid-template-columns: 1fr;
+            gap: 1.5rem;
+        }
+        @media (min-width: 1024px) {
+            .cards-grid { grid-template-columns: repeat(2, 1fr); }
+        }
+        .card {
+            background-color: #ffffff;
+            border: 1px solid var(--light-border);
+            border-radius: 1rem;
+            padding: 2rem;
+            box-shadow: 0 2px 6px rgba(0,0,0,0.05);
+        }
+        .card h2 {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            font-size: 1.25rem;
+            font-weight: 700;
+            color: #1e293b;
+        }
+        .card p {
+            margin-top: 0.75rem;
+            color: #475569;
+            font-size: 0.9rem;
+        }
+        .features {
+            margin-top: 1rem;
+            display: grid;
+            grid-template-columns: 1fr;
+            gap: 0.5rem;
+            font-size: 0.875rem;
+        }
+        @media (min-width: 640px) {
+            .features { grid-template-columns: repeat(2, 1fr); }
+        }
+        .features li {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+        /* Perks band */
+        .perks-section {
+            background-color: #f8fafc;
+            border-top: 1px solid rgba(226, 232, 240, 0.7);
+            border-bottom: 1px solid rgba(226, 232, 240, 0.7);
+            padding: 2rem 1rem;
+        }
+        .perks-grid {
+            display: grid;
+            grid-template-columns: 1fr;
+            gap: 1rem;
+        }
+        @media (min-width: 768px) {
+            .perks-grid { grid-template-columns: repeat(3, 1fr); }
+        }
+        .perk {
+            background-color: #ffffff;
+            border: 1px solid var(--light-border);
+            border-radius: 1rem;
+            padding: 1.5rem;
+            box-shadow: 0 10px 30px -10px rgba(0,0,0,0.08);
+            text-align: left;
+        }
+        .perk .icon-box {
+            height: 40px;
+            width: 40px;
+            background-color: rgba(0, 82, 155, 0.1);
+            color: var(--primary-color);
+            border-radius: 0.75rem;
+            display: grid;
+            place-items: center;
+            margin-bottom: 0.5rem;
+            font-size: 1rem;
+            font-weight: 700;
+        }
+        .perk-title {
+            font-weight: 600;
+            font-size: 1rem;
+            margin-bottom: 0.5rem;
+        }
+        .perk-desc {
+            font-size: 0.875rem;
+            color: #475569;
+        }
+        /* FAQ */
+        .faq-section {
+            padding: 3rem 1rem;
+        }
+        .faq-grid {
+            display: grid;
+            grid-template-columns: 1fr;
+            gap: 1rem;
+        }
+        @media (min-width: 768px) {
+            .faq-grid { grid-template-columns: repeat(3, 1fr); }
+        }
+        .faq {
+            background-color: #ffffff;
+            border: 1px solid var(--light-border);
+            border-radius: 1rem;
+            padding: 1.5rem;
+        }
+        .faq-question {
+            font-weight: 600;
+            margin-bottom: 0.5rem;
+        }
+        .faq-answer {
+            font-size: 0.875rem;
+            color: #475569;
+        }
+        /* Footer */
+        footer {
+            border-top: 1px solid rgba(226, 232, 240, 0.7);
+            padding: 2rem 1rem;
+            background-color: #ffffff;
+            margin-top: auto;
+        }
+        .footer-content {
+            max-width: 1200px;
+            margin: 0 auto;
+            display: flex;
+            flex-direction: column;
+            gap: 1rem;
+        }
+        @media (min-width: 768px) {
+            .footer-content { flex-direction: row; justify-content: space-between; align-items: center; }
+        }
+        .footer-text {
+            font-size: 0.875rem;
+            color: #475569;
+        }
+        .footer-text span {
+            font-weight: 600;
+            color: var(--primary-color);
         }
     </style>
 </head>
 <body>
-    <img src="{{ url_for('static', filename='showinghive_logo.jpg') }}" alt="ShowingHive Logo" class="logo">
-    <h1>ShowingHive Dashboard</h1>
-    <p>
-        <a href="{{ url_for('ui_create_property') }}" class="button">Create New Property</a>
-    </p>
-    <h2>Properties</h2>
-    <ul>
-        {% for pid, prop in properties.items() %}
-        <li><a href="{{ url_for('ui_property_detail', property_id=pid) }}">{{ prop['name'] }}</a></li>
-        {% else %}
-        <li>No properties added.</li>
-        {% endfor %}
-    </ul>
+    <!-- Top bar -->
+    <header>
+        <div class="top-container">
+            <div class="logo-container">
+                <!-- Logo image with fallback text if it fails to load -->
+                <img src="{{ url_for('static', filename='showinghive_logo.jpg') }}" alt="Showing Hive" onclick="window.location.href='{{ url_for('ui_home') }}'">
+                <div class="logo-text" onclick="window.location.href='{{ url_for('ui_home') }}'">Showing Hive</div>
+            </div>
+            <div class="auth-links">
+                {% if current_user.is_authenticated %}
+                    Logged in as {{ current_user.username }} | <a href="{{ url_for('logout') }}">Logout</a>
+                {% else %}
+                    <a href="{{ url_for('login') }}">Login</a> | <a href="{{ url_for('register') }}">Register</a>
+                {% endif %}
+            </div>
+            <div class="powered-by">
+                <span class="opacity-70">Powered by</span> <span>ShopProp</span>
+            </div>
+        </div>
+    </header>
+
+    <!-- Hero section -->
+    <section class="hero">
+        <div class="container">
+            <h1>Manage Showings, Share Disclosures, and Get Real Estate Tasks Done — All in One Place</h1>
+            <p>One platform for agents and sellers to run listings — and for agents to find paid work. Simple. Modern. <span>Powered by ShopProp.</span></p>
+            <div class="hero-buttons">
+                <a href="{{ url_for('ui_create_property') if current_user.is_authenticated else url_for('login') }}" class="btn btn-primary">Manage Showings & Disclosures</a>
+                <a href="#" class="btn btn-secondary">Post or Do Tasks</a>
+            </div>
+            <p style="margin-top: 0.75rem; font-size: 0.875rem; color: #64748b;">Free for ShopProp clients. Free to try for everyone.</p>
+
+            <!-- Stats grid -->
+            <div class="stats-grid">
+                <div class="stat-card">
+                    <div class="value">4,000+</div>
+                    <div class="label">Transactions completed</div>
+                </div>
+                <div class="stat-card">
+                    <div class="value">Since 2007</div>
+                    <div class="label">Proven experience</div>
+                </div>
+                <div class="stat-card">
+                    <div class="value">WA • CA • HI • AZ • TX • VA</div>
+                    <div class="label">Active markets</div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Two cards for features -->
+    <section class="cards-section">
+        <div class="container">
+            <div class="cards-grid">
+                <!-- Manage Showings & Disclosures card -->
+                <div class="card">
+                    <h2>Manage Showings & Disclosures</h2>
+                    <p>Upload disclosures, set your showing calendar in one click, allow buyers and agents to schedule and download disclosures while tracking activity and stats in real time.</p>
+                    <ul class="features">
+                        <li>Share TDS/SPQ & packets securely</li>
+                        <li>Auto notifications on bookings</li>
+                        <li>Track downloads & buyer interest</li>
+                        <li>Role-based access & audit trail</li>
+                    </ul>
+                    <a href="{{ url_for('ui_create_property') if current_user.is_authenticated else url_for('login') }}" class="btn btn-primary" style="margin-top: 1rem; display: inline-flex;">Manage My Showings & Disclosures</a>
+                </div>
+                <!-- Post or Do Tasks card -->
+                <div class="card">
+                    <h2>Post or Do Real Estate Tasks</h2>
+                    <p>Post your showing or real estate task and get it done, or take on tasks in your area and get paid. Build your reputation and control your schedule.</p>
+                    <ul class="features">
+                        <li>Instant alerts in your area</li>
+                        <li>Verified profiles & ratings</li>
+                        <li>Accept on your schedule</li>
+                        <li>Clear terms & payouts</li>
+                    </ul>
+                    <div style="margin-top: 1rem; display: flex; gap: 0.75rem; flex-wrap: wrap;">
+                        <a href="#" class="btn btn-primary" style="display: inline-flex;">Post a Task or Showing</a>
+                        <a href="#" class="btn btn-secondary" style="display: inline-flex;">Find & Do Tasks</a>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Perks band -->
+    <section class="perks-section">
+        <div class="container">
+            <div class="perks-grid">
+                <div class="perk">
+                    <div class="icon-box">🔔</div>
+                    <div class="perk-title">Instant Alerts</div>
+                    <p class="perk-desc">Get notified the moment a showing is booked or a task appears in your area.</p>
+                </div>
+                <div class="perk">
+                    <div class="icon-box">✅</div>
+                    <div class="perk-title">Free Verification for Clients</div>
+                    <p class="perk-desc">ShopProp clients get verification and unlimited posting & claiming for free.</p>
+                </div>
+                <div class="perk">
+                    <div class="icon-box">⚡️</div>
+                    <div class="perk-title">Faster Work, Fewer Clicks</div>
+                    <p class="perk-desc">One dashboard for showings, disclosures, and paid tasks.</p>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- FAQ section -->
+    <section class="faq-section">
+        <div class="container">
+            <h3 style="text-align: center; font-size: 1.5rem; font-weight: 700; margin-bottom: 1.5rem;">Quick FAQ</h3>
+            <div class="faq-grid">
+                <div class="faq">
+                    <div class="faq-question">Is it free?</div>
+                    <div class="faq-answer">Yes. It's free to try for everyone. ShopProp clients get instant alerts, verification, and unlimited posting & claiming for free.</div>
+                </div>
+                <div class="faq">
+                    <div class="faq-question">Do I need to be a ShopProp client?</div>
+                    <div class="faq-answer">No. Anyone can use it. But clients get extra perks that make it faster and easier.</div>
+                </div>
+                <div class="faq">
+                    <div class="faq-question">How do payouts work?</div>
+                    <div class="faq-answer">Task doers are paid directly by the task creator. Optional escrow/release flows coming later.</div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Footer -->
+    <footer>
+        <div class="footer-content">
+            <p class="footer-text">© {{ now().year }} Showing Hive. All rights reserved.</p>
+            <p class="footer-text">Powered by <span>ShopProp</span></p>
+        </div>
+    </footer>
 </body>
 </html>
