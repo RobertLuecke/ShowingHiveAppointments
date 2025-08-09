@@ -66,9 +66,36 @@ import io
 import smtplib
 from email.mime.text import MIMEText
 
+# Added imports for database and user authentication
+from flask_sqlalchemy import SQLAlchemy
+from flask_login import (
+    LoginManager,
+    UserMixin,
+    login_user,
+    login_required,
+    logout_user,
+    current_user,
+)
+
 
 app = Flask(__name__)
 app.config["JSON_SORT_KEYS"] = False
+
+# -----------------------------------------------------------------------------
+# Database configuration and initialization
+#
+# The extended application now uses a SQLite database to persist users,
+# properties and showings.  The SQLAlchemy and Flask‑Login extensions are
+# configured here.  Replace the secret key with a secure random value in
+# production.
+app.config["SECRET_KEY"] = "change-this-secret-key"
+app.config["SQLALCHEMY_DATABASE_URI"] = "sqlite:///database.db"
+app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
+
+db = SQLAlchemy(app)
+login_manager = LoginManager(app)
+# Redirect unauthenticated users to the login page
+login_manager.login_view = "login"
 
 # In‑memory data stores
 properties: Dict[str, Dict[str, Any]] = {}
@@ -76,6 +103,114 @@ showings: Dict[str, Dict[str, Any]] = {}
 feedback_store: Dict[str, List[Dict[str, Any]]] = {}
 blocked_times: Dict[str, List[Tuple[datetime, datetime]]] = {}
 tours: Dict[str, Dict[str, Any]] = {}
+
+# -----------------------------------------------------------------------------
+# Database models
+#
+# The ``User`` model represents users who can authenticate to manage properties
+# and showings.  The ``PropertyModel`` and ``ShowingModel`` models mirror the
+# in‑memory ``properties`` and ``showings`` data structures but provide
+# persistent storage.  During creation of a property or showing via the UI or
+# API, the corresponding database record is created in addition to the
+# in‑memory entry.  These models are simplified and do not include every field
+# from the in‑memory dictionaries; they demonstrate how to begin migrating
+# towards a persistent database.
+
+class User(db.Model, UserMixin):
+    id = db.Column(db.Integer, primary_key=True)
+    username = db.Column(db.String(80), unique=True, nullable=False)
+    password = db.Column(db.String(120), nullable=False)
+
+
+class PropertyModel(db.Model):
+    id = db.Column(db.String(36), primary_key=True)
+    name = db.Column(db.String(200), nullable=False)
+    address = db.Column(db.String(200), nullable=False)
+    seller_name = db.Column(db.String(200))
+    seller_phone = db.Column(db.String(50))
+    seller_email = db.Column(db.String(200))
+    agent_name = db.Column(db.String(200))
+    agent_phone = db.Column(db.String(50))
+    agent_email = db.Column(db.String(200))
+    auto_approve_showings = db.Column(db.Boolean, default=False)
+    requires_disclosure_approval = db.Column(db.Boolean, default=False)
+
+
+class ShowingModel(db.Model):
+    id = db.Column(db.String(36), primary_key=True)
+    property_id = db.Column(db.String(36), db.ForeignKey("property_model.id"), nullable=False)
+    client_name = db.Column(db.String(200), nullable=False)
+    client_phone = db.Column(db.String(50))
+    client_email = db.Column(db.String(200))
+    scheduled_at = db.Column(db.DateTime, nullable=False)
+    status = db.Column(db.String(20), nullable=False, default="pending")
+    lockbox_code = db.Column(db.String(20))
+    code_expires_at = db.Column(db.DateTime)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+    property = db.relationship("PropertyModel", backref="showings")
+
+# -----------------------------------------------------------------------------
+# Helper to load database records into in‑memory structures
+
+def load_db_into_memory() -> None:
+    """Load persisted properties and showings from the database into the in‑memory dictionaries.
+
+    This function queries the PropertyModel and ShowingModel tables and populates
+    the ``properties`` and ``showings`` dictionaries, allowing the rest of the
+    application to operate on the same in‑memory data structures it used before
+    database support was added.
+    """
+    # Clear existing in‑memory data
+    properties.clear()
+    showings.clear()
+    for prop in PropertyModel.query.all():
+        properties[prop.id] = {
+            "id": prop.id,
+            "name": prop.name,
+            "address": prop.address,
+            "created_at": datetime.utcnow(),
+            "seller_name": prop.seller_name,
+            "seller_phone": prop.seller_phone,
+            "seller_email": prop.seller_email,
+            "agent_name": prop.agent_name,
+            "agent_phone": prop.agent_phone,
+            "agent_email": prop.agent_email,
+            "auto_approve_showings": prop.auto_approve_showings,
+            "requires_disclosure_approval": prop.requires_disclosure_approval,
+        }
+    for sh in ShowingModel.query.all():
+        showings[sh.id] = {
+            "id": sh.id,
+            "property_id": sh.property_id,
+            "client_name": sh.client_name,
+            "client_phone": sh.client_phone,
+            "client_email": sh.client_email,
+            "scheduled_at": sh.scheduled_at,
+            "status": sh.status,
+            "lockbox_code": sh.lockbox_code,
+            "code_expires_at": sh.code_expires_at,
+            "created_at": sh.created_at,
+        }
+
+# -----------------------------------------------------------------------------
+# User loader for Flask‑Login
+#
+@login_manager.user_loader
+def load_user(user_id: str) -> Optional[User]:
+    """
+    Given a user ID (stored in the session), return the corresponding User
+    object.  Flask‑Login uses this callback to reload the user from the
+    database on each request.
+
+    :param user_id: The primary key of the user as a string.
+    :return: The ``User`` instance or ``None`` if not found.
+    """
+    try:
+        return User.query.get(int(user_id))
+    except Exception:
+        return None
+
 
 # -----------------------------------------------------------------------------
 # Disclosure management and activity logging
@@ -1725,6 +1860,47 @@ def email_admin() -> Any:
 # functions used by the API endpoints to ensure the front‑end and API stay
 # synchronized.
 
+@app.route("/register", methods=["GET", "POST"])
+def register() -> Any:
+    """Render a registration form and create a new user."""
+    if request.method == "POST":
+        username = request.form.get("username")
+        password = request.form.get("password")
+        if not username or not password:
+            return render_template("register.html", error="Username and password are required")
+        # check if user already exists
+        existing = User.query.filter_by(username=username).first()
+        if existing:
+            return render_template("register.html", error="Username already exists")
+        new_user = User(username=username, password=password)
+        db.session.add(new_user)
+        db.session.commit()
+        login_user(new_user)
+        return redirect(url_for("ui_home"))
+    return render_template("register.html")
+
+
+@app.route("/login", methods=["GET", "POST"])
+def login() -> Any:
+    """Render a login form and authenticate the user."""
+    if request.method == "POST":
+        username = request.form.get("username")
+        password = request.form.get("password")
+        user = User.query.filter_by(username=username, password=password).first()
+        if user:
+            login_user(user)
+            return redirect(url_for("ui_home"))
+        return render_template("login.html", error="Invalid username or password")
+    return render_template("login.html")
+
+
+@app.route("/logout")
+@login_required
+def logout() -> Any:
+    """Log out the current user and redirect to home page."""
+    logout_user()
+    return redirect(url_for("ui_home"))
+
 @app.route("/")
 def ui_home() -> Any:
     """Render a homepage listing all properties with links to view details."""
@@ -1732,6 +1908,7 @@ def ui_home() -> Any:
 
 
 @app.route("/properties/new", methods=["GET", "POST"])
+@login_required
 def ui_create_property() -> Any:
     """Render a form to create a new property and handle submission."""
     if request.method == "POST":
@@ -1771,11 +1948,28 @@ def ui_create_property() -> Any:
             "auto_approve_showings": auto_approve,
             "requires_disclosure_approval": req_disc_approval,
         }
+        # Persist the property in the database
+        db_prop = PropertyModel(
+            id=prop_id,
+            name=name,
+            address=address,
+            seller_name=seller_name,
+            seller_phone=seller_phone,
+            seller_email=seller_email,
+            agent_name=agent_name,
+            agent_phone=agent_phone,
+            agent_email=agent_email,
+            auto_approve_showings=auto_approve,
+            requires_disclosure_approval=req_disc_approval,
+        )
+        db.session.add(db_prop)
+        db.session.commit()
         return redirect(url_for("ui_property_detail", property_id=prop_id))
     return render_template("create_property.html")
 
 
 @app.route("/properties/<property_id>")
+@login_required
 def ui_property_detail(property_id: str) -> Any:
     """Display details for a single property, including showings and packages."""
     prop = properties.get(property_id)
@@ -1839,6 +2033,21 @@ def ui_schedule_showing(property_id: str) -> Any:
         "code_expires_at": None,
         "created_at": datetime.utcnow(),
     }
+    # Persist the showing to the database
+    db_showing = ShowingModel(
+        id=showing_id,
+        property_id=property_id,
+        client_name=client_name,
+        client_phone=client_phone,
+        client_email=client_email,
+        scheduled_at=start,
+        status="pending",
+        lockbox_code=None,
+        code_expires_at=None,
+        created_at=datetime.utcnow(),
+    )
+    db.session.add(db_showing)
+    db.session.commit()
     # send notifications and log event (reuse code from API)
     try:
         # notify buyer
@@ -2258,5 +2467,9 @@ def ui_approve_share(share_id: str) -> Any:
 
 # Only run the development server if this module is executed directly.
 if __name__ == "__main__":
-    # Run the app on port 3000 for demonstration purposes
+    # Ensure database tables exist and load any existing records into memory
+    with app.app_context():
+        db.create_all()
+        load_db_into_memory()
+    # Run the development server on port 3000 for demonstration purposes
     app.run(host="0.0.0.0", port=3000, debug=True)
