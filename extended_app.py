@@ -111,6 +111,15 @@ tours: Dict[str, Dict[str, Any]] = {}
 # implementation should store files on disk or in a blob storage service.
 profile_pics: Dict[int, Dict[str, Any]] = {}
 
+# Favorites store
+#
+# A mapping from user ID to a set of property IDs that the user has
+# marked as favourites.  Buyers can save properties to their favourites
+# list from the public listing or property pages.  Sellers and
+# agents may ignore this field.  This is an in‑memory store; in a
+# production system you would persist favourites in the database.
+favorites: Dict[int, set] = {}
+
 # -----------------------------------------------------------------------------
 # Database models
 #
@@ -2031,6 +2040,15 @@ def ui_dashboard():
         "avg_rating_quality": _avg([fb.get("rating_quality") for fb in my_feedback]),
     }
 
+    # Determine favourites for buyers
+    my_favorites: List[Dict[str, Any]] = []
+    if hasattr(current_user, "role") and current_user.role == "buyer":
+        fav_ids = favorites.get(current_user.id, set())
+        # Build list of property dicts for the user's favourites
+        for pid in fav_ids:
+            prop = properties.get(pid)
+            if prop:
+                my_favorites.append(prop)
     return render_template(
         "dashboard.html",
         properties=my_props,
@@ -2039,6 +2057,7 @@ def ui_dashboard():
         package_requests=my_pkg_requests,
         feedback_list=my_feedback,
         stats=stats,
+        favorites=my_favorites,
     )
 
 # ------------------------------ Public Listing -------------------------------
@@ -2066,8 +2085,15 @@ def public_list() -> Any:
     sorted_properties = sorted(
         properties.values(), key=lambda p: p.get("name", "")
     )
+    # Determine the current user's favourite properties if authenticated buyer
+    fav_set = set()
+    if current_user.is_authenticated and getattr(current_user, "role", None) == "buyer":
+        fav_set = favorites.get(current_user.id, set())
     return render_template(
-        "public_list.html", properties=sorted_properties, current_year=current_year
+        "public_list.html",
+        properties=sorted_properties,
+        current_year=current_year,
+        favorites_set=fav_set,
     )
 
 
@@ -2134,12 +2160,20 @@ def ui_profile() -> Any:
             )
         except Exception:
             img_data = None
+    # Determine favourite properties for this user
+    fav_ids = favorites.get(user.id, set())
+    fav_props: List[Dict[str, Any]] = []
+    for pid in fav_ids:
+        prop = properties.get(pid)
+        if prop:
+            fav_props.append(prop)
     return render_template(
         "profile.html",
         user=user,
         properties=my_props,
         showings=upcoming_showings,
         picture=img_data,
+        favorites=fav_props,
     )
 
 # Manage Showings & Disclosures page
@@ -2181,6 +2215,11 @@ def public_property(public_token: str) -> Any:
     if not prop_id:
         return "Property not found", 404
     prop = properties.get(prop_id)
+    # Determine if the logged‑in user (buyer) has favourited this property
+    is_favorite = False
+    if current_user.is_authenticated and getattr(current_user, "role", None) == "buyer":
+        fav_set = favorites.get(current_user.id, set())
+        is_favorite = prop_id in fav_set
     # Build weekly slots (8am–8pm) like the seller view
     from datetime import date, time
     today = date.today()
@@ -2215,7 +2254,13 @@ def public_property(public_token: str) -> Any:
         week_slots.append({"date": day_label, "times": times_list})
     # Filter packages for this property that are marked public
     property_packages = [pkg for pkg in packages.values() if pkg["property_id"] == prop_id and pkg.get("is_public")]
-    return render_template("public_property.html", property=prop, week_slots=week_slots, packages=property_packages)
+    return render_template(
+        "public_property.html",
+        property=prop,
+        week_slots=week_slots,
+        packages=property_packages,
+        is_favorite=is_favorite,
+    )
 
 
 @app.route("/public/property/<public_token>/schedule-slot/<scheduled_at>", methods=["GET", "POST"])
@@ -2473,6 +2518,50 @@ def tasks_page() -> Any:
 </body>
 </html>"""
     )
+
+
+# -----------------------------------------------------------------------------
+# Favourites
+#
+# Buyers can save properties to their favourites list via a POST request.  When a
+# buyer toggles a favourite, the property ID is added to or removed from the
+# ``favorites`` dictionary keyed by their user ID.  This route requires
+# authentication and is intended for buyers only.  After toggling the
+# favourite, the user is redirected back to the referring page or the public
+# property view.
+@app.route("/favorite/<property_id>", methods=["POST"])
+@login_required
+def favorite_property(property_id: str) -> Any:
+    """Toggle a property in the current buyer's favourites list.
+
+    Only users with role ``buyer`` may favourite properties.  If the user
+    attempts to favourite a property with any other role, they are redirected
+    to the home page.  The function adds the property ID to the set of
+    favourites for the current user (creating the set if necessary) or
+    removes it if it already exists.  After toggling, the user is
+    redirected to the page they came from if available, otherwise to the
+    public view of the property.
+    """
+    # Only allow buyers to favourite properties
+    if getattr(current_user, "role", None) != "buyer":
+        return redirect(url_for("ui_home"))
+    # Ensure the property exists
+    if property_id not in properties:
+        return "Property not found", 404
+    # Get or create the favourites set for this user
+    fav_set = favorites.setdefault(current_user.id, set())
+    # Toggle membership
+    if property_id in fav_set:
+        fav_set.remove(property_id)
+    else:
+        fav_set.add(property_id)
+    # Redirect back to referrer or fallback to public property
+    ref = request.referrer
+    if ref:
+        return redirect(ref)
+    # Fallback if no referrer
+    prop = properties[property_id]
+    return redirect(url_for("public_property", public_token=prop.get("public_token")))
 
 
 @app.route("/properties/new", methods=["GET", "POST"])
