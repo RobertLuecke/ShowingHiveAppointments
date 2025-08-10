@@ -28,6 +28,9 @@
     <nav>
       <a class="btn" href="{{ url_for('ui_home') }}">Home</a>
       <a class="btn" href="{{ url_for('ui_profile') }}">Profile</a>
+      {% if current_user.role != 'buyer' %}
+      <a class="btn" href="{{ url_for('list_guest_requests') }}">Guest Requests</a>
+      {% endif %}
       <a class="btn" href="{{ url_for('logout') }}">Logout</a>
     </nav>
   </header>
@@ -58,13 +61,24 @@
     </div>
 
     <div class="tabs">
+      {# Display different tabs depending on the user's role.  Buyers see a
+         favourites tab instead of the properties tab and the tabs are
+         renamed accordingly.  Agents and sellers see the original tabs. #}
+      {% if current_user.role == 'buyer' %}
+      <button class="tab active" data-tab="favorites">Favorites</button>
+      <button class="tab" data-tab="showings">Showings</button>
+      <button class="tab" data-tab="packages">Disclosures</button>
+      <button class="tab" data-tab="feedback">Feedback</button>
+      {% else %}
       <button class="tab active" data-tab="props">Properties</button>
       <button class="tab" data-tab="showings">Showings</button>
       <button class="tab" data-tab="packages">Disclosures</button>
       <button class="tab" data-tab="feedback">Feedback</button>
+      {% endif %}
     </div>
 
-    <!-- Properties -->
+    {# Properties section (agents/sellers only). Buyers will not see this. #}
+    {% if current_user.role != 'buyer' %}
     <section id="props" class="section active">
       <div class="card">
         <div style="display:flex; justify-content:space-between; align-items:center;">
@@ -92,6 +106,35 @@
         </table>
       </div>
     </section>
+    {% endif %}
+
+    {# Favourites section (buyers only).  Displays the buyer's saved properties. #}
+    {% if current_user.role == 'buyer' %}
+    <section id="favorites" class="section active">
+      <div class="card">
+        <h3>Favourite Properties</h3>
+        <table>
+          <thead><tr><th>Name</th><th>Address</th><th>Actions</th></tr></thead>
+          <tbody>
+            {% for p in favorites %}
+              <tr>
+                <td>{{ p.name if p.name else p['name'] }}</td>
+                <td>{{ p.address if p.address else p['address'] }}</td>
+                <td>
+                  <a class="btn" href="{{ url_for('public_property', public_token=p['public_token']) }}">View</a>
+                  <form method="post" action="{{ url_for('favorite_property', property_id=p['id']) }}" style="display:inline">
+                    <button type="submit" class="btn">Remove</button>
+                  </form>
+                </td>
+              </tr>
+            {% else %}
+              <tr><td colspan="3">No favourite properties yet.</td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </section>
+    {% endif %}
 
     <!-- Showings -->
     <section id="showings" class="section">
@@ -107,16 +150,21 @@
                 <td>{{ s.requester_name if s.requester_name else s['requester_name'] }}</td>
                 <td>{{ s.status if s.status else s['status'] }}</td>
                 <td>
-                  {% if (s.status or s['status']) == 'pending' %}
-                    <form method="post" action="{{ url_for('approve_showing') }}" style="display:inline">
-                      <input type="hidden" name="showing_id" value="{{ s.id if s.id else s['id'] }}" />
-                      <button class="btn primary">Approve</button>
-                    </form>
-                    <form method="post" action="{{ url_for('decline_showing') }}" style="display:inline">
-                      <input type="hidden" name="showing_id" value="{{ s.id if s.id else s['id'] }}" />
-                      <button class="btn">Decline</button>
-                    </form>
-                  {% else %} — {% endif %}
+                  {# Only agents/sellers may approve or decline showings. Buyers simply see the status. #}
+                  {% if current_user.role != 'buyer' %}
+                    {% if (s.status or s['status']) == 'pending' %}
+                      <form method="post" action="{{ url_for('approve_showing') }}" style="display:inline">
+                        <input type="hidden" name="showing_id" value="{{ s.id if s.id else s['id'] }}" />
+                        <button class="btn primary">Approve</button>
+                      </form>
+                      <form method="post" action="{{ url_for('decline_showing') }}" style="display:inline">
+                        <input type="hidden" name="showing_id" value="{{ s.id if s.id else s['id'] }}" />
+                        <button class="btn">Decline</button>
+                      </form>
+                    {% else %} — {% endif %}
+                  {% else %}
+                    —
+                  {% endif %}
                 </td>
               </tr>
             {% else %}
