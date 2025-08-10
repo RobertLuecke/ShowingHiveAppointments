@@ -65,6 +65,7 @@ from werkzeug.utils import secure_filename
 import io
 import smtplib
 from email.mime.text import MIMEText
+from sqlalchemy import or_
 
 # Added imports for database and user authentication
 from flask_sqlalchemy import SQLAlchemy
@@ -1930,8 +1931,14 @@ def login() -> Any:
         # Use email as the username identifier
         email = request.form.get("email")
         password = request.form.get("password")
-        # Look up the user by their username (which is stored as their email)
-        user = User.query.filter_by(username=email, password=password).first()
+        # Look up the user by either their username (stored as the email) or
+        # the separate email column (older schemas may have kept these
+        # distinct).  Use SQLAlchemy's ``or_`` operator to match either
+        # condition along with the provided password.
+        user = User.query.filter(
+            or_(User.username == email, User.email == email),
+            User.password == password,
+        ).first()
         if user:
             login_user(user)
             # After logging in, take the user to their dashboard if they have one
