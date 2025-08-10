@@ -58,7 +58,7 @@ from __future__ import annotations
 import random
 import uuid
 from datetime import datetime, timedelta
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Set
 
 from flask import Flask, jsonify, request, render_template_string, send_file, render_template, redirect, url_for
 from werkzeug.utils import secure_filename
@@ -2176,7 +2176,249 @@ def ui_profile() -> Any:
         favorites=fav_props,
     )
 
-# Manage Showings & Disclosures page
+# -------------------------------------------------------------------------
+# Guest request flow
+#
+# Buyers and buyers' agents who do not wish to create an account can request
+# access to a property's showing calendar and disclosure packages by
+# providing only their name and phone number.  These "guest requests"
+# are stored in memory and presented to the listing agent or seller for
+# approval.  When a request is approved, the requester receives a
+# shareable link to the property's public page.  If declined, the
+# requester is notified accordingly.  This feature allows agents to
+# post a simple link in the MLS remarks for buyers to request access
+# without signing up.
+
+# In‑memory store for guest requests.  Each entry is keyed by a
+# UUID string and contains fields: id, property_id, name, phone,
+# role (buyer or buyer_agent), email (optional), status (pending,
+# approved, declined), created_at ISO timestamp, and access_link when
+# approved.  In a production system these would be persisted in a
+# database.
+guest_requests: Dict[str, Dict[str, Any]] = {}
+
+# Utility to find a property record by its public token.  Returns
+# the property dictionary or None if not found.
+def _find_property_by_token(token: str) -> Optional[Dict[str, Any]]:
+    for prop in properties.values():
+        if prop.get("public_token") == token:
+            return prop
+    return None
+
+@app.route("/request_access/<public_token>", methods=["GET", "POST"])
+def request_access(public_token: str) -> Any:
+    """Display or handle a guest access request for a property.
+
+    Buyers and buyers' agents can access this page without logging in.  On
+    GET, it shows a form for the requester to enter their name, phone
+    number, role (Buyer or Buyer Agent) and optional email.  On POST,
+    the request is recorded in the global ``guest_requests`` store and
+    the listing agent or seller is notified via SMS/email.  The page
+    then displays a confirmation message to the requester.
+
+    Args:
+        public_token: Unique token that identifies the property.
+
+    Returns:
+        Rendered HTML page.
+    """
+    # Look up property by token
+    prop = _find_property_by_token(public_token)
+    if not prop:
+        return "Property not found", 404
+    # Determine current year for footer
+    from datetime import datetime
+    current_year = datetime.now().year
+    if request.method == "POST":
+        name = request.form.get("name", "").strip()
+        phone = request.form.get("phone", "").strip()
+        role = request.form.get("role", "buyer").strip()  # default to buyer
+        email = request.form.get("email", "").strip()
+        if not name or not phone:
+            return render_template(
+                "request_access.html",
+                property=prop,
+                error="Name and phone number are required.",
+                current_year=current_year,
+            )
+        import uuid
+        req_id = uuid.uuid4().hex
+        guest_requests[req_id] = {
+            "id": req_id,
+            "property_id": prop["id"],
+            "public_token": public_token,
+            "name": name,
+            "phone": phone,
+            "role": role,
+            "email": email or None,
+            "status": "pending",
+            "created_at": datetime.utcnow().isoformat(),
+            "access_link": None,
+        }
+        # Notify listing agent/seller (if configured) via SMS/email
+        # Determine contact details for seller/agent
+        seller_id = prop.get("seller_id")
+        agent_username = prop.get("agent_username")
+        contact_name = None
+        contact_phone = None
+        contact_email = None
+        if seller_id:
+            seller = User.query.get(seller_id)
+            if seller:
+                contact_name = seller.username
+                contact_phone = getattr(seller, "seller_phone", None)
+                contact_email = seller.email
+        elif agent_username:
+            # Agent username corresponds to a user with that username
+            agent = User.query.filter_by(username=agent_username).first()
+            if agent:
+                contact_name = agent.username
+                contact_phone = getattr(agent, "agent_phone", None)
+                contact_email = agent.email
+        # Compose message
+        msg = (
+            f"New access request for property {prop.get('name')} by {name}. "
+            f"Phone: {phone}. Role: {role}."
+        )
+        if contact_email:
+            send_email(contact_email, f"New access request for {prop.get('name')}", msg)
+        if contact_phone:
+            send_sms(contact_phone, msg)
+        return render_template(
+            "request_access.html",
+            property=prop,
+            submitted=True,
+            current_year=current_year,
+        )
+    # GET: render form
+    return render_template(
+        "request_access.html",
+        property=prop,
+        error=None,
+        submitted=False,
+        current_year=current_year,
+    )
+
+@app.route("/guest_requests")
+@login_required
+def list_guest_requests() -> Any:
+    """Display all guest access requests for the current user's properties.
+
+    Only sellers, listing agents, buyer agents or both agents can view
+    requests.  Buyers are redirected to the home page.
+    """
+    if not hasattr(current_user, "role") or current_user.role not in {
+        "seller", "listing_agent", "buyer_agent", "both_agent", "agent"
+    }:
+        return redirect(url_for("ui_home"))
+    # Build a list of requests where the property belongs to current user
+    # Determine property IDs managed by current user
+    prop_ids: Set[str] = set()
+    for prop in properties.values():
+        seller_id = prop.get("seller_id")
+        agent_username = prop.get("agent_username")
+        if seller_id and seller_id == current_user.id:
+            prop_ids.add(prop["id"])
+        elif agent_username and agent_username == getattr(current_user, "username", None):
+            prop_ids.add(prop["id"])
+    # Filter guest requests for these properties
+    requests_for_user = [r for r in guest_requests.values() if r.get("property_id") in prop_ids]
+    # Sort by created_at descending
+    requests_for_user.sort(key=lambda r: r.get("created_at", ""), reverse=True)
+    from datetime import datetime
+    current_year = datetime.now().year
+    return render_template(
+        "guest_requests.html",
+        requests=requests_for_user,
+        properties=properties,
+        current_year=current_year,
+    )
+
+@app.route("/guest_requests/<req_id>/approve", methods=["POST"])
+@login_required
+def approve_guest_request(req_id: str) -> Any:
+    """Approve a pending guest access request.
+
+    Marks the request as approved, generates an access link, and
+    notifies the requester via SMS/email if provided.  Only
+    sellers/agents can approve.  Buyers attempting to access this
+    endpoint will be redirected to home.  After approval, the user
+    is redirected back to the guest requests page.
+    """
+    if not hasattr(current_user, "role") or current_user.role not in {
+        "seller", "listing_agent", "buyer_agent", "both_agent", "agent"
+    }:
+        return redirect(url_for("ui_home"))
+    req = guest_requests.get(req_id)
+    if not req:
+        return "Request not found", 404
+    # Ensure property belongs to current user
+    prop = properties.get(req.get("property_id"))
+    if not prop:
+        return "Property not found", 404
+    seller_id = prop.get("seller_id")
+    agent_username = prop.get("agent_username")
+    if not (
+        (seller_id and seller_id == current_user.id)
+        or (agent_username and agent_username == getattr(current_user, "username", None))
+    ):
+        return "Unauthorized", 403
+    # Approve if pending
+    if req.get("status") == "pending":
+        req["status"] = "approved"
+        # Construct public link for property
+        public_token = req.get("public_token")
+        access_link = url_for("public_property", public_token=public_token, _external=True)
+        req["access_link"] = access_link
+        # Notify requester via email or SMS
+        msg = (
+            f"Your request for property {prop.get('name')} has been approved. "
+            f"You can access the showing calendar and disclosures here: {access_link}"
+        )
+        if req.get("email"):
+            send_email(req["email"], f"Access approved for {prop.get('name')}", msg)
+        # Use phone if available for SMS
+        send_sms(req.get("phone"), msg)
+    return redirect(url_for("list_guest_requests"))
+
+@app.route("/guest_requests/<req_id>/decline", methods=["POST"])
+@login_required
+def decline_guest_request(req_id: str) -> Any:
+    """Decline a pending guest access request.
+
+    Marks the request as declined and notifies the requester if
+    possible.  Only sellers/agents can decline.  After declining,
+    redirects back to the guest requests page.
+    """
+    if not hasattr(current_user, "role") or current_user.role not in {
+        "seller", "listing_agent", "buyer_agent", "both_agent", "agent"
+    }:
+        return redirect(url_for("ui_home"))
+    req = guest_requests.get(req_id)
+    if not req:
+        return "Request not found", 404
+    # Ensure property belongs to current user
+    prop = properties.get(req.get("property_id"))
+    if not prop:
+        return "Property not found", 404
+    seller_id = prop.get("seller_id")
+    agent_username = prop.get("agent_username")
+    if not (
+        (seller_id and seller_id == current_user.id)
+        or (agent_username and agent_username == getattr(current_user, "username", None))
+    ):
+        return "Unauthorized", 403
+    if req.get("status") == "pending":
+        req["status"] = "declined"
+        msg = (
+            f"Your request for property {prop.get('name')} has been declined. "
+            "Please contact the listing agent for further information."
+        )
+        if req.get("email"):
+            send_email(req["email"], f"Access declined for {prop.get('name')}", msg)
+        send_sms(req.get("phone"), msg)
+    return redirect(url_for("list_guest_requests"))
+
 @app.route("/manage-showings")
 @login_required
 def manage_showings() -> Any:
