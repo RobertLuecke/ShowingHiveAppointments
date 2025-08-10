@@ -2034,6 +2034,35 @@ def ui_dashboard():
         stats=stats,
     )
 
+# ------------------------------ Public Listing -------------------------------
+#
+# Provide a public page where buyers and buyer agents can browse all
+# properties and access their showing calendars and disclosure packages
+# without needing to log in.  Each property is listed with a button
+# linking to its public token page.  The page is accessible via
+# `/public` and displays the property name and address.  It uses the
+# existing ``public_property`` route for individual properties.
+@app.route("/public")
+def public_list() -> Any:
+    """Render a public listing page showing all properties.
+
+    Buyers and buyer agents can access this page without an account to
+    browse available properties and request showings or download
+    disclosure packages.  Properties are listed in alphabetical
+    order by name and show their address.  Each listing links to the
+    public property page via its token.  The current year is passed
+    for the footer in the template.
+    """
+    from datetime import datetime
+    current_year = datetime.now().year
+    # Sort properties by name for display
+    sorted_properties = sorted(
+        properties.values(), key=lambda p: p.get("name", "")
+    )
+    return render_template(
+        "public_list.html", properties=sorted_properties, current_year=current_year
+    )
+
 
 # -----------------------------------------------------------------------------
 # User Profile
