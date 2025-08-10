@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Profile — Showing Hive</title>
+  <style>
+    :root { --brand: #00529B; }
+    body { font-family: system-ui, -apple-system, Segoe UI, Arial, sans-serif; margin: 0; color: #0f172a; background: #fafafa; }
+    header { padding: 14px 20px; border-bottom: 1px solid #e2e8f0; display: flex; align-items: center; justify-content: space-between; background: #fff; }
+    .brand { font-weight: 800; color: var(--brand); }
+    nav a { margin-left: 12px; text-decoration: none; color: var(--brand); font-weight: 500; }
+    .wrap { max-width: 1100px; margin: 24px auto; padding: 0 16px; }
+    h1 { margin-top: 0; }
+    .card { background: #fff; border: 1px solid #e2e8f0; border-radius: 12px; padding: 16px; margin-bottom: 20px; }
+    form label { display: block; margin-bottom: 10px; font-weight: 500; }
+    form input[type="text"], form input[type="email"], form input[type="file"] { width: 100%; padding: 8px 10px; border: 1px solid #cbd5e1; border-radius: 8px; font-size: 14px; }
+    .btn { padding: 8px 14px; border-radius: 8px; border: 1px solid #cbd5e1; background: #fff; cursor: pointer; font-weight: 500; }
+    .btn.primary { background: var(--brand); color: #fff; border-color: var(--brand); }
+    table { width: 100%; border-collapse: collapse; margin-top: 12px; }
+    th, td { padding: 10px 8px; border-bottom: 1px solid #e2e8f0; text-align: left; }
+    th { background: #f8fafc; }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="brand">Showing Hive</div>
+    <nav>
+      <a href="{{ url_for('ui_home') }}">Home</a>
+      <a href="{{ url_for('ui_dashboard') }}">Dashboard</a>
+      <a href="{{ url_for('logout') }}">Logout</a>
+    </nav>
+  </header>
+  <div class="wrap">
+    <h1>Your Profile</h1>
+    <div class="card">
+      <form method="post" enctype="multipart/form-data">
+        <label>Username:<br>
+          <input type="text" name="username" value="{{ user.username }}" disabled>
+        </label>
+        <label>Email:<br>
+          <input type="email" name="email" value="{{ user.email or '' }}" required>
+        </label>
+        <label>Address:<br>
+          <input type="text" name="address" value="{{ user.address or '' }}">
+        </label>
+        <label>License Number:<br>
+          <input type="text" name="license" value="{{ user.license_number or '' }}">
+        </label>
+        <label>Profile Picture:<br>
+          <input type="file" name="picture" accept="image/*">
+        </label>
+        {% if picture %}
+        <div style="margin-top: 10px;">
+          <img src="{{ picture }}" alt="Profile picture" style="height: 80px; border-radius: 8px;">
+        </div>
+        {% endif %}
+        <div style="margin-top: 12px;">
+          <button type="submit" class="btn primary">Save Profile</button>
+        </div>
+      </form>
+    </div>
+    <div class="card">
+      <h2>Your Properties</h2>
+      <table>
+        <thead>
+          <tr><th>Name</th><th>Address</th><th>Actions</th></tr>
+        </thead>
+        <tbody>
+          {% for p in properties %}
+          <tr>
+            <td>{{ p.name if p.name else p['name'] }}</td>
+            <td>{{ p.address if p.address else p['address'] }}</td>
+            <td>
+              <a class="btn" href="{{ url_for('ui_property_detail', property_id=p['id']) }}">Open</a>
+              {% if p.public_token %}
+              <a class="btn" href="{{ url_for('public_property', public_token=p['public_token']) }}" target="_blank">Public Link</a>
+              {% endif %}
+            </td>
+          </tr>
+          {% else %}
+          <tr><td colspan="3">No properties found.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    <div class="card">
+      <h2>Upcoming Showings</h2>
+      <table>
+        <thead>
+          <tr><th>Property</th><th>Date & Time</th><th>Status</th></tr>
+        </thead>
+        <tbody>
+          {% for s in showings %}
+          <tr>
+            <td>{{ properties|selectattr('id','equalto', s.property_id)|first.name if properties else s.property_id }}</td>
+            <td>{{ s.scheduled_at if s.scheduled_at else s['scheduled_at'] }}</td>
+            <td>{{ s.status if s.status else s['status'] }}</td>
+          </tr>
+          {% else %}
+          <tr><td colspan="3">No upcoming showings.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+</body>
+</html>
