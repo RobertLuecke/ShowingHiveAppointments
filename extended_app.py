@@ -1884,30 +1884,37 @@ def email_admin() -> Any:
 
 @app.route("/register", methods=["GET", "POST"])
 def register() -> Any:
-    """Render a registration form and create a new user."""
+    """Render a registration form and create a new user.
+
+    The registration form collects the user's email, password and role.  The
+    email serves as the unique login identifier ("username") for the account.
+    Address and license number are no longer collected at registration and
+    can be set later on the profile page.
+    """
     if request.method == "POST":
-        username = request.form.get("username")
-        password = request.form.get("password")
+        # Use email as the unique username
         email = request.form.get("email")
-        address = request.form.get("address")
-        license_number = request.form.get("license")
-        if not username or not password:
-            return render_template("register.html", error="Username and password are required")
-        # check if user already exists
+        password = request.form.get("password")
+        role = request.form.get("role") or "agent"
+        # Validate required fields
+        if not email or not password:
+            return render_template("register.html", error="Email and password are required")
+        # Use the email as the username internally
+        username = email
+        # Check if a user with this email/username already exists
         existing = User.query.filter_by(username=username).first()
         if existing:
-            return render_template("register.html", error="Username already exists")
-        # Determine the role from the registration form; default to agent if
-        # unspecified.  Sellers may register themselves and later be assigned
-        # to a property by an agent.
-        role = request.form.get("role") or "agent"
+            return render_template("register.html", error="An account with this email already exists")
+        # Create the new user; address and license number are optional and will
+        # default to empty strings.  Users can edit these later on their
+        # profile page.
         new_user = User(
             username=username,
             password=password,
             role=role,
             email=email,
-            address=address,
-            license_number=license_number,
+            address="",  # set to empty; editable later
+            license_number="",  # set to empty; editable later
         )
         db.session.add(new_user)
         db.session.commit()
@@ -1920,14 +1927,16 @@ def register() -> Any:
 def login() -> Any:
     """Render a login form and authenticate the user."""
     if request.method == "POST":
-        username = request.form.get("username")
+        # Use email as the username identifier
+        email = request.form.get("email")
         password = request.form.get("password")
-        user = User.query.filter_by(username=username, password=password).first()
+        # Look up the user by their username (which is stored as their email)
+        user = User.query.filter_by(username=email, password=password).first()
         if user:
             login_user(user)
             # After logging in, take the user to their dashboard if they have one
             return redirect(url_for("ui_dashboard"))
-        return render_template("login.html", error="Invalid username or password")
+        return render_template("login.html", error="Invalid email or password")
     return render_template("login.html")
 
 
@@ -1984,14 +1993,17 @@ def ui_dashboard():
     # Gather property IDs for lookups
     prop_ids = {p["id"] for p in my_props}
 
-    # Filter showings for these properties
-    my_showings = [show for show in showings if show.get("property_id") in prop_ids]
+    # Filter showings for these properties.  Note: showings is a dict; iterate over values.
+    my_showings = [show for show in showings.values() if show.get("property_id") in prop_ids]
     # Sort showings chronologically by scheduled time (ISO string comparison suffices)
     my_showings = sorted(my_showings, key=lambda s: s.get("scheduled_at", ""))
 
-    # Filter disclosure packages and requests for these properties
-    my_packages = [pkg for pkg in disclosure_packages if pkg.get("property_id") in prop_ids]
-    my_pkg_requests = [req for req in disclosure_requests if req.get("property_id") in prop_ids]
+    # Filter disclosure packages and package share requests for these properties.  The
+    # global variable ``packages`` stores package definitions keyed by package ID,
+    # and ``package_shares`` stores share records keyed by share ID.  These lists
+    # replace the previously undefined disclosure_packages and disclosure_requests.
+    my_packages = [pkg for pkg in packages.values() if pkg.get("property_id") in prop_ids]
+    my_pkg_requests = [req for req in package_shares.values() if req.get("property_id") in prop_ids]
 
     # Filter feedback for these properties
     my_feedback = [fb for fb in feedback if fb.get("property_id") in prop_ids]
