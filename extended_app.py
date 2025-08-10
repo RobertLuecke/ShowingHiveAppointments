@@ -104,6 +104,12 @@ feedback_store: Dict[str, List[Dict[str, Any]]] = {}
 blocked_times: Dict[str, List[Tuple[datetime, datetime]]] = {}
 tours: Dict[str, Dict[str, Any]] = {}
 
+# Profile pictures uploaded by users.  Each entry maps a user ID to a dict
+# containing the original filename and the binary content of the uploaded
+# image.  This is kept in memory only for demonstration; a production
+# implementation should store files on disk or in a blob storage service.
+profile_pics: Dict[int, Dict[str, Any]] = {}
+
 # -----------------------------------------------------------------------------
 # Database models
 #
@@ -124,6 +130,18 @@ class User(db.Model, UserMixin):
     # properties, while sellers can approve showings and disclosures for their own
     # properties. Buyers do not authenticate and therefore do not have a role.
     role = db.Column(db.String(20), nullable=False, default="agent")
+
+    # Additional profile fields
+    # Email address for contact.  Required for agents and sellers; optional for other roles.
+    email = db.Column(db.String(200))
+    # Mailing or contact address.  Optional.
+    address = db.Column(db.String(200))
+    # License number for agents (both listing and buyer agents).  Optional; sellers
+    # and buyers may leave this blank.
+    license_number = db.Column(db.String(200))
+    # Filename of the uploaded avatar/profile image.  The actual file content is stored
+    # in the ``profile_pics`` in‑memory dictionary keyed by user ID.
+    avatar_filename = db.Column(db.String(200))
 
 
 class PropertyModel(db.Model):
@@ -1870,6 +1888,9 @@ def register() -> Any:
     if request.method == "POST":
         username = request.form.get("username")
         password = request.form.get("password")
+        email = request.form.get("email")
+        address = request.form.get("address")
+        license_number = request.form.get("license")
         if not username or not password:
             return render_template("register.html", error="Username and password are required")
         # check if user already exists
@@ -1880,11 +1901,18 @@ def register() -> Any:
         # unspecified.  Sellers may register themselves and later be assigned
         # to a property by an agent.
         role = request.form.get("role") or "agent"
-        new_user = User(username=username, password=password, role=role)
+        new_user = User(
+            username=username,
+            password=password,
+            role=role,
+            email=email,
+            address=address,
+            license_number=license_number,
+        )
         db.session.add(new_user)
         db.session.commit()
         login_user(new_user)
-        return redirect(url_for("ui_home"))
+        return redirect(url_for("ui_dashboard"))
     return render_template("register.html")
 
 
@@ -1939,7 +1967,7 @@ def ui_dashboard():
     page.
     """
     # Ensure the current user is an agent or seller; buyers are redirected
-    if hasattr(current_user, "role") and current_user.role not in {"agent", "seller", "listing agent", "listing & buyer’s agent", "listing and buyer agent"}:
+    if hasattr(current_user, "role") and current_user.role not in {"seller", "listing_agent", "buyer_agent", "both_agent", "agent"}:
         return redirect(url_for("ui_home"))
 
     # Collect properties owned or managed by the current user
@@ -1958,6 +1986,8 @@ def ui_dashboard():
 
     # Filter showings for these properties
     my_showings = [show for show in showings if show.get("property_id") in prop_ids]
+    # Sort showings chronologically by scheduled time (ISO string comparison suffices)
+    my_showings = sorted(my_showings, key=lambda s: s.get("scheduled_at", ""))
 
     # Filter disclosure packages and requests for these properties
     my_packages = [pkg for pkg in disclosure_packages if pkg.get("property_id") in prop_ids]
@@ -1990,6 +2020,78 @@ def ui_dashboard():
         package_requests=my_pkg_requests,
         feedback_list=my_feedback,
         stats=stats,
+    )
+
+
+# -----------------------------------------------------------------------------
+# User Profile
+#
+# Authenticated users can view and update their profile information.  Sellers
+# and agents may supply an email address, mailing address, and license number,
+# and optionally upload a profile picture.  The uploaded image is stored in
+# memory and referenced by a filename on the User record.  The profile page
+# also displays the user's properties and upcoming showings in a simple list.
+
+@app.route("/profile", methods=["GET", "POST"])
+@login_required
+def ui_profile() -> Any:
+    """Render and handle updates to the logged‑in user's profile."""
+    user: User = current_user  # type: ignore[assignment]
+    if request.method == "POST":
+        # Update user fields from form
+        # Email is required for agents and sellers but optional for other roles
+        email = request.form.get("email")
+        address = request.form.get("address")
+        license_number = request.form.get("license")
+        # Update the SQLAlchemy model
+        user.email = email
+        user.address = address
+        user.license_number = license_number
+        # Handle profile picture upload
+        file = request.files.get("picture")
+        if file and file.filename:
+            filename = secure_filename(file.filename)
+            user.avatar_filename = filename
+            profile_pics[user.id] = {"filename": filename, "content": file.read()}
+        db.session.commit()
+        # Reload in‑memory structures from DB to reflect changes
+        load_db_into_memory()
+    # Collect properties owned or managed by the current user
+    my_props = []
+    for prop in properties.values():
+        seller_id = prop.get("seller_id")
+        agent_username = prop.get("agent_username")
+        if seller_id is not None and seller_id == user.id:
+            my_props.append(prop)
+        elif agent_username is not None and agent_username == getattr(user, "username", None):
+            my_props.append(prop)
+    prop_ids = {p["id"] for p in my_props}
+    # Gather upcoming showings across all managed properties
+    upcoming_showings = [s for s in showings if s.get("property_id") in prop_ids]
+    # Sort showings by scheduled time ascending
+    upcoming_showings = sorted(
+        upcoming_showings,
+        key=lambda s: s.get("scheduled_at", "")
+    )
+    # Determine if a profile picture exists for this user
+    pic_info = profile_pics.get(user.id)
+    # Prepare base64‑encoded image data for the template if a picture exists
+    img_data = None
+    if pic_info:
+        try:
+            import base64  # late import to avoid unused import when no image
+            img_data = (
+                "data:image/" + pic_info.get("filename", "").split(".")[-1] + ";base64," +
+                base64.b64encode(pic_info.get("content", b" ")).decode("utf-8")
+            )
+        except Exception:
+            img_data = None
+    return render_template(
+        "profile.html",
+        user=user,
+        properties=my_props,
+        showings=upcoming_showings,
+        picture=img_data,
     )
 
 # Manage Showings & Disclosures page
@@ -3084,14 +3186,19 @@ if __name__ == "__main__":
             user_columns = [col["name"] for col in inspector.get_columns("user")]
         except Exception:
             user_columns = []
-        # If the User model defines a role but the database is missing it, drop
-        # and recreate all tables to avoid OperationalError during queries.
-        if "role" not in user_columns:
+        # If any of the expected User columns are missing, drop and recreate tables.
+        # This simple schema migration is only suitable for development.  In a
+        # production system, use Alembic or another migration tool.
+        required_user_columns = {"role", "email", "address", "license_number", "avatar_filename"}
+        missing_cols = required_user_columns.difference(set(user_columns))
+        if missing_cols:
             db.drop_all()
             print(
-                "Database schema outdated or missing role column; dropping and "
+                "Database schema outdated or missing columns {} on user table; dropping and "
                 "recreating all tables with the updated schema. All existing data "
-                "will be lost."
+                "will be lost.".format(
+                    ", ".join(sorted(missing_cols))
+                )
             )
         db.create_all()
         # Load any existing records into in-memory structures for the demo
