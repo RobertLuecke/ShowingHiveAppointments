@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Dashboard — Showing Hive</title>
+  <style>
+    :root { --brand:#00529B; }
+    body { font-family: system-ui, -apple-system, Segoe UI, Arial, sans-serif; margin: 0; color:#0f172a; background:#fafafa; }
+    header { padding: 14px 20px; border-bottom:1px solid #e2e8f0; display:flex; align-items:center; justify-content:space-between; background:#fff; }
+    .brand { font-weight:800; color:var(--brand); }
+    .wrap { max-width:1100px; margin: 24px auto; padding: 0 16px; }
+    .stats { display:grid; grid-template-columns: repeat(3,1fr); gap:10px; margin-bottom:18px; }
+    .card { background:#fff; border:1px solid #e2e8f0; border-radius:12px; padding:16px; }
+    .tabs { display:flex; gap:8px; margin: 10px 0 16px; }
+    .tab { border:1px solid #cbd5e1; padding:8px 12px; border-radius:10px; cursor:pointer; background:#fff; }
+    .tab.active { background: var(--brand); color:#fff; border-color: var(--brand); }
+    .section { display:none; }
+    .section.active { display:block; }
+    table { width:100%; border-collapse: collapse; background:#fff; }
+    th, td { padding:10px 8px; border-bottom:1px solid #e2e8f0; text-align:left; }
+    .btn { padding:6px 10px; border-radius:8px; border:1px solid #cbd5e1; background:#fff; cursor:pointer; }
+    .btn.primary { background: var(--brand); color:#fff; border-color: var(--brand); }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="brand">Showing Hive</div>
+    <nav>
+      <a class="btn" href="{{ url_for('ui_home') }}">Home</a>
+      <a class="btn" href="{{ url_for('logout') }}">Logout</a>
+    </nav>
+  </header>
+
+  <div class="wrap">
+    <h1>Dashboard</h1>
+
+    <div class="stats">
+      <div class="card">
+        <div><strong>Properties</strong></div>
+        <div style="font-size:28px">{{ stats.properties }}</div>
+      </div>
+      <div class="card">
+        <div><strong>Showings</strong></div>
+        <div style="font-size:28px">{{ stats.showings_total }}</div>
+      </div>
+      <div class="card">
+        <div><strong>Disclosure Requests</strong></div>
+        <div style="font-size:28px">{{ stats.disclosures_total }}</div>
+      </div>
+    </div>
+
+    <div class="card" style="margin-bottom:16px">
+      <div><strong>Average Feedback</strong></div>
+      <div>House: {{ stats.avg_rating_house if stats.avg_rating_house is not none else '—' }}</div>
+      <div>Price: {{ stats.avg_rating_price if stats.avg_rating_price is not none else '—' }}</div>
+      <div>Quality: {{ stats.avg_rating_quality if stats.avg_rating_quality is not none else '—' }}</div>
+    </div>
+
+    <div class="tabs">
+      <button class="tab active" data-tab="props">Properties</button>
+      <button class="tab" data-tab="showings">Showings</button>
+      <button class="tab" data-tab="packages">Disclosures</button>
+      <button class="tab" data-tab="feedback">Feedback</button>
+    </div>
+
+    <!-- Properties -->
+    <section id="props" class="section active">
+      <div class="card">
+        <div style="display:flex; justify-content:space-between; align-items:center;">
+          <h3>Your Properties</h3>
+          <a class="btn primary" href="{{ url_for('ui_create_property') }}">+ New Property</a>
+        </div>
+        <table>
+          <thead><tr><th>Name</th><th>Address</th><th>Actions</th></tr></thead>
+          <tbody>
+            {% for p in properties %}
+              <tr>
+                <td>{{ p.name if p.name else p['name'] }}</td>
+                <td>{{ p.address if p.address else p['address'] }}</td>
+                <td>
+                  <a class="btn" href="{{ url_for('ui_property_detail', property_id=p['id']) }}">Open</a>
+                  {% if p.public_token %}
+                    <a class="btn" href="{{ url_for('public_property', public_token=p['public_token']) }}" target="_blank">Public Link</a>
+                  {% endif %}
+                </td>
+              </tr>
+            {% else %}
+              <tr><td colspan="3">No properties yet.</td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- Showings -->
+    <section id="showings" class="section">
+      <div class="card">
+        <h3>Showings</h3>
+        <table>
+          <thead><tr><th>Property</th><th>When</th><th>Who</th><th>Status</th><th>Actions</th></tr></thead>
+          <tbody>
+            {% for s in showings %}
+              <tr>
+                <td>{{ (properties|selectattr('id','equalto', s.property_id)|first).name if properties else s.property_id }}</td>
+                <td>{{ s.scheduled_at if s.scheduled_at else s['scheduled_at'] }}</td>
+                <td>{{ s.requester_name if s.requester_name else s['requester_name'] }}</td>
+                <td>{{ s.status if s.status else s['status'] }}</td>
+                <td>
+                  {% if (s.status or s['status']) == 'pending' %}
+                    <form method="post" action="{{ url_for('approve_showing') }}" style="display:inline">
+                      <input type="hidden" name="showing_id" value="{{ s.id if s.id else s['id'] }}" />
+                      <button class="btn primary">Approve</button>
+                    </form>
+                    <form method="post" action="{{ url_for('decline_showing') }}" style="display:inline">
+                      <input type="hidden" name="showing_id" value="{{ s.id if s.id else s['id'] }}" />
+                      <button class="btn">Decline</button>
+                    </form>
+                  {% else %} — {% endif %}
+                </td>
+              </tr>
+            {% else %}
+              <tr><td colspan="5">No showings yet.</td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- Disclosures -->
+    <section id="packages" class="section">
+      <div class="card">
+        <h3>Disclosure Packages & Requests</h3>
+        <table>
+          <thead><tr><th>Property</th><th>Package</th><th>Downloads/Requests</th><th>Auto-Approve</th></tr></thead>
+          <tbody>
+            {% for pkg in packages %}
+              <tr>
+                <td>{{ (properties|selectattr('id','equalto', pkg.property_id)|first).name if properties else pkg.property_id }}</td>
+                <td>{{ pkg.title if pkg.title else pkg['title'] }}</td>
+                <td>
+                  {{ (package_requests|selectattr('package_id','equalto', (pkg.id if pkg.id else pkg['id']))|list)|length }}
+                </td>
+                <td>{{ 'On' if (pkg.auto_approve if pkg.auto_approve is not none else pkg.get('auto_approve')) else 'Off' }}</td>
+              </tr>
+            {% else %}
+              <tr><td colspan="4">No disclosure packages yet.</td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- Feedback -->
+    <section id="feedback" class="section">
+      <div class="card">
+        <h3>Feedback</h3>
+        <table>
+          <thead><tr><th>Property</th><th>Type</th><th>House</th><th>Price</th><th>Quality</th><th>Comment</th></tr></thead>
+          <tbody>
+            {% for f in feedback_list %}
+              <tr>
+                <td>{{ (properties|selectattr('id','equalto', f.property_id)|first).name if properties else f.property_id }}</td>
+                <td>{{ f.kind if f.kind else f['kind'] }}</td>
+                <td>{{ f.rating_house if f.rating_house is not none else f.get('rating_house','—') }}</td>
+                <td>{{ f.rating_price if f.rating_price is not none else f.get('rating_price','—') }}</td>
+                <td>{{ f.rating_quality if f.rating_quality is not none else f.get('rating_quality','—') }}</td>
+                <td>{{ f.comment if f.comment else f.get('comment','') }}</td>
+              </tr>
+            {% else %}
+              <tr><td colspan="6">No feedback yet.</td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+  </div>
+
+  <script>
+    const tabs = document.querySelectorAll('.tab');
+    const sections = document.querySelectorAll('.section');
+    tabs.forEach(btn => {
+      btn.addEventListener('click', () => {
+        tabs.forEach(b => b.classList.remove('active'));
+        sections.forEach(s => s.classList.remove('active'));
+        btn.classList.add('active');
+        document.getElementById(btn.dataset.tab).classList.add('active');
+      });
+    });
+  </script>
+</body>
+</html>
