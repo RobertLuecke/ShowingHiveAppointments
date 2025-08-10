@@ -71,6 +71,15 @@
             <label>Password:
                 <input type="password" name="password" required />
             </label>
+            <label>Role:
+                <select name="role" required>
+                    <option value="seller">Seller</option>
+                    <option value="listing_agent">Listing Agent</option>
+                    <option value="buyer_agent">Buyer’s Agent</option>
+                    <option value="both_agent">Listing &amp; Buyer’s Agent</option>
+                    <option value="buyer">Buyer</option>
+                </select>
+            </label>
             <button type="submit">Register</button>
         </form>
         <p>Already have an account? <a href="{{ url_for('login') }}">Login here</a>.</p>
