@@ -1897,7 +1897,8 @@ def login() -> Any:
         user = User.query.filter_by(username=username, password=password).first()
         if user:
             login_user(user)
-            return redirect(url_for("ui_home"))
+            # After logging in, take the user to their dashboard if they have one
+            return redirect(url_for("ui_dashboard"))
         return render_template("login.html", error="Invalid username or password")
     return render_template("login.html")
 
@@ -1925,6 +1926,71 @@ def ui_home() -> Any:
 
 # Alias '/' with endpoint name 'home' to map to ui_home
 app.add_url_rule("/", endpoint="home", view_func=ui_home)
+
+# ------------------------------ Dashboard -----------------------------------
+@app.route("/dashboard")
+@login_required
+def ui_dashboard():
+    """Display a dashboard summarizing the current user's properties, showings,
+    disclosure packages, and feedback.
+
+    Agents and sellers can use this view to manage their listings and monitor
+    activity. Buyers do not have a dashboard and are redirected to the home
+    page.
+    """
+    # Ensure the current user is an agent or seller; buyers are redirected
+    if hasattr(current_user, "role") and current_user.role not in {"agent", "seller", "listing agent", "listing & buyer’s agent", "listing and buyer agent"}:
+        return redirect(url_for("ui_home"))
+
+    # Collect properties owned or managed by the current user
+    my_props = []
+    for prop in properties.values():
+        # Each property record may store seller_id or agent_username depending on how it was created
+        seller_id = prop.get("seller_id")
+        agent_username = prop.get("agent_username")
+        if seller_id is not None and seller_id == current_user.id:
+            my_props.append(prop)
+        elif agent_username is not None and agent_username == getattr(current_user, "username", None):
+            my_props.append(prop)
+
+    # Gather property IDs for lookups
+    prop_ids = {p["id"] for p in my_props}
+
+    # Filter showings for these properties
+    my_showings = [show for show in showings if show.get("property_id") in prop_ids]
+
+    # Filter disclosure packages and requests for these properties
+    my_packages = [pkg for pkg in disclosure_packages if pkg.get("property_id") in prop_ids]
+    my_pkg_requests = [req for req in disclosure_requests if req.get("property_id") in prop_ids]
+
+    # Filter feedback for these properties
+    my_feedback = [fb for fb in feedback if fb.get("property_id") in prop_ids]
+
+    # Compute simple statistics
+    def _avg(values):
+        # Helper to compute average ignoring None
+        vals = [v for v in values if v is not None]
+        return round(sum(vals) / len(vals), 2) if vals else None
+
+    stats = {
+        "properties": len(my_props),
+        "showings_total": len(my_showings),
+        "disclosures_total": len(my_pkg_requests),
+        "feedback_total": len(my_feedback),
+        "avg_rating_house": _avg([fb.get("rating_house") for fb in my_feedback]),
+        "avg_rating_price": _avg([fb.get("rating_price") for fb in my_feedback]),
+        "avg_rating_quality": _avg([fb.get("rating_quality") for fb in my_feedback]),
+    }
+
+    return render_template(
+        "dashboard.html",
+        properties=my_props,
+        showings=my_showings,
+        packages=my_packages,
+        package_requests=my_pkg_requests,
+        feedback_list=my_feedback,
+        stats=stats,
+    )
 
 # Manage Showings & Disclosures page
 @app.route("/manage-showings")
