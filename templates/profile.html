@@ -34,11 +34,8 @@
     <h1>Your Profile</h1>
     <div class="card">
       <form method="post" enctype="multipart/form-data">
-        <label>Username:<br>
-          <input type="text" name="username" value="{{ user.username }}" disabled>
-        </label>
-        <label>Email:<br>
-          <input type="email" name="email" value="{{ user.email or '' }}" required>
+        <label>Email (username):<br>
+          <input type="email" name="email" value="{{ user.email or user.username or '' }}" required>
         </label>
         <label>Address:<br>
           <input type="text" name="address" value="{{ user.address or '' }}">
