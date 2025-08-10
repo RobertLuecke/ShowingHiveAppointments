@@ -330,11 +330,12 @@
         <div class="container">
             <h1>Manage Showings, Share Disclosures, and Get Real Estate Tasks Done — All in One Place</h1>
             <p>One platform for agents and sellers to run listings — and for agents to find paid work. Simple. Modern. <span>Powered by ShopProp.</span></p>
-            <div class="hero-buttons">
-                <a href="{{ url_for('ui_create_property') if current_user.is_authenticated else url_for('login') }}" class="btn btn-primary">Manage Showings & Disclosures</a>
-                <a href="#" class="btn btn-secondary">Post or Do Tasks</a>
-            </div>
-            <p style="margin-top: 0.75rem; font-size: 0.875rem; color: #64748b;">Free for ShopProp clients. Free to try for everyone.</p>
+                <div class="hero-buttons">
+                    <a href="{{ url_for('ui_create_property') if current_user.is_authenticated else url_for('login') }}" class="btn btn-primary">Manage Showings &amp; Disclosures</a>
+                    <a href="{{ url_for('public_list') }}" class="btn btn-secondary">Buyers &amp; Agents: Schedule Showings &amp; Download Disclosures</a>
+                    <a href="#" class="btn btn-secondary">Post or Do Tasks</a>
+                </div>
+                <p style="margin-top: 0.75rem; font-size: 0.875rem; color: #64748b;">Free for ShopProp clients. Free to try for everyone.</p>
 
             <!-- Stats grid -->
             <div class="stats-grid">
@@ -436,7 +437,7 @@
     <!-- Footer -->
     <footer>
         <div class="footer-content">
-            <p class="footer-text">© {{ now().year }} Showing Hive. All rights reserved.</p>
+            <p class="footer-text">© {{ current_year }} Showing Hive. All rights reserved.</p>
             <p class="footer-text">Powered by <span>ShopProp</span></p>
         </div>
     </footer>

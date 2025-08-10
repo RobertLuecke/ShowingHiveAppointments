@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <title>ShowingHive – Public Listings</title>
+    <!-- Simple styling consistent with the home and property pages -->
+    <style>
+        :root {
+            --primary-color: #00529B;
+            --primary-hover: #004080;
+            --light-bg: #E6F1FF;
+            --light-border: #E2E8F0;
+        }
+        body {
+            margin: 0;
+            font-family: Arial, sans-serif;
+            background-color: #ffffff;
+            color: #1e293b;
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+        }
+        header {
+            width: 100%;
+            border-bottom: 1px solid rgba(226, 232, 240, 0.7);
+            background-color: #ffffff;
+        }
+        .top-container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 0 1rem;
+            height: 64px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+        .logo-container {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+        }
+        .logo-container img {
+            height: 40px;
+            width: auto;
+            cursor: pointer;
+        }
+        .logo-text {
+            font-weight: bold;
+            color: var(--primary-color);
+            cursor: pointer;
+        }
+        .powered-by {
+            font-size: 0.85rem;
+            color: #64748b;
+        }
+        .powered-by span {
+            font-weight: 600;
+            color: var(--primary-color);
+        }
+        main {
+            flex: 1;
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 2rem 1rem;
+        }
+        h1 {
+            font-size: 1.75rem;
+            font-weight: 700;
+            margin-bottom: 1.5rem;
+        }
+        .property-list {
+            display: grid;
+            grid-template-columns: 1fr;
+            gap: 1rem;
+        }
+        @media (min-width: 768px) {
+            .property-list {
+                grid-template-columns: repeat(2, 1fr);
+            }
+        }
+        @media (min-width: 1024px) {
+            .property-list {
+                grid-template-columns: repeat(3, 1fr);
+            }
+        }
+        .property-card {
+            background-color: #ffffff;
+            border: 1px solid var(--light-border);
+            border-radius: 0.75rem;
+            padding: 1.5rem;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+            display: flex;
+            flex-direction: column;
+            justify-content: space-between;
+        }
+        .property-card h3 {
+            margin: 0 0 0.5rem;
+            font-size: 1.25rem;
+            color: #1e293b;
+        }
+        .property-card p {
+            margin: 0 0 1rem;
+            color: #475569;
+        }
+        .btn {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            border-radius: 0.5rem;
+            padding: 0.5rem 1rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: opacity 0.15s ease-in-out;
+            text-decoration: none;
+        }
+        .btn-primary {
+            background-color: var(--primary-color);
+            color: #ffffff;
+        }
+        .btn-primary:hover {
+            opacity: 0.9;
+        }
+        footer {
+            border-top: 1px solid rgba(226, 232, 240, 0.7);
+            padding: 1rem 0;
+            text-align: center;
+        }
+        .footer-text {
+            font-size: 0.875rem;
+            color: #475569;
+        }
+        .footer-text span {
+            font-weight: 600;
+            color: var(--primary-color);
+        }
+    </style>
+</head>
+<body>
+    <!-- Top Bar -->
+    <header>
+        <div class="top-container">
+            <div class="logo-container">
+                <img src="{{ url_for('static', filename='showinghive_logo.jpg') }}" alt="Showing Hive" />
+                <span class="logo-text" onclick="window.location.href='{{ url_for('ui_home') }}'">Showing Hive</span>
+            </div>
+            <div class="powered-by">
+                <span class="opacity-70">Powered by</span> <span>ShopProp</span>
+            </div>
+        </div>
+    </header>
+
+    <main>
+        <h1>Properties</h1>
+        {% if properties %}
+        <div class="property-list">
+            {% for prop in properties %}
+            <div class="property-card">
+                <div>
+                    <h3>{{ prop.name }}</h3>
+                    <p>{{ prop.address }}</p>
+                </div>
+                <a href="{{ url_for('public_property', public_token=prop.public_token) }}" class="btn btn-primary">Schedule Showing &amp; Download Disclosures</a>
+            </div>
+            {% endfor %}
+        </div>
+        {% else %}
+        <p>No properties available.</p>
+        {% endif %}
+    </main>
+
+    <!-- Footer -->
+    <footer>
+        <p class="footer-text">© {{ current_year }} Showing Hive. All rights reserved.</p>
+        <p class="footer-text">Powered by <span>ShopProp</span></p>
+    </footer>
+</body>
+</html>
